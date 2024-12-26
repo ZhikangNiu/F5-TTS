@@ -56,11 +56,12 @@ def mask_from_start_end_indices(seq_len: int["b"], start: int["b"], end: int["b"
 
 
 def mask_from_frac_lengths(seq_len: int["b"], frac_lengths: float["b"]):  # noqa: F722 F821
-    lengths = (frac_lengths * seq_len).long()
-    max_start = seq_len - lengths
-
+    lengths = (frac_lengths * seq_len).long() # mask 0.7 ~ 1.0, 从end开始减会有mask的值
+    max_start = seq_len - lengths # 限制最大的start，大于180的，start不小于180，小于180的，随便选择
+    min_start = torch.minimum(torch.tensor(180, device=seq_len.device), max_start) 
+    
     rand = torch.rand_like(frac_lengths)
-    start = (max_start * rand).long().clamp(min=0)
+    start = ((max_start - min_start) * rand).long().clamp(min=0) + min_start
     end = start + lengths
 
     return mask_from_start_end_indices(seq_len, start, end)
