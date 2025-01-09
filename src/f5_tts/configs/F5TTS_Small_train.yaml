@@ -1,12 +1,12 @@
 hydra:
   run:
-    dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${model.tokenizer}_${datasets.name}_${datasets.batch_size_per_gpu}
+    dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}_${datasets.batch_size_per_gpu}_mask0.7-1.0_baseline_4gpu_zero_start
 
 ckpts:
   logger: wandb  # wandb | tensorboard | None
   save_per_updates: 50000  # save checkpoint per steps
   last_per_steps: 5000  # save last checkpoint per steps
-  save_dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${model.tokenizer}_${datasets.name}_${datasets.batch_size_per_gpu}
+  save_dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}_${datasets.batch_size_per_gpu}_mask0.7-1.0_baseline_4gpu_zero_start
 
 datasets:
   name: Emilia_ZH_EN
@@ -27,7 +27,7 @@ model:
   name: F5TTS_Small
   tokenizer: pinyin
   tokenizer_path: None  # if tokenizer = 'custom', define the path to the tokenizer you want to use (should be vocab.txt)
-  # mask_ratio: [0.7,1.0]
+  frac_lengths_mask: [0.7,1.0]
   arch:
     dim: 768
     depth: 18

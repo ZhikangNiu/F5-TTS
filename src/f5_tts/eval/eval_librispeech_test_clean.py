@@ -48,10 +48,10 @@ def main():
 
     local = args.local
     if local:  # use local custom checkpoint dir
-        asr_ckpt_dir = "../checkpoints/Systran/faster-whisper-large-v3"
+        asr_ckpt_dir = "/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/niuzhikang-240108120093/dev_f5_be53fb1/checkpoints/faster-whisper-large-v3"
     else:
         asr_ckpt_dir = ""  # auto download to cache dir
-    wavlm_ckpt_dir = "../checkpoints/UniSpeech/wavlm_large_finetune.pth"
+    wavlm_ckpt_dir = "/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/niuzhikang-240108120093/dev_f5_be53fb1/checkpoints/wavlm_large_finetune.pth"
 
     # --------------------------- WER ---------------------------
 
@@ -72,9 +72,11 @@ def main():
                 json_line = json.dumps(line, ensure_ascii=False)
                 f.write(json_line + "\n")
 
-        wer = round(np.mean(wers) * 100, 3)
-        print(f"\nTotal {len(wers)} samples")
-        print(f"WER      : {wer}%")
+            wer = round(np.mean(wers) * 100, 3)
+            f.write(f"Total {len(wers)} samples\n")
+            f.write(f"WER      : {wer}\n%")
+        print(f"Total {len(wers)} samples\n")
+        print(f"WER      : {wer}\n%")
         print(f"Results have been saved to {wer_result_path}")
 
     # --------------------------- SIM ---------------------------

@@ -36,6 +36,7 @@ def main(cfg):
         transformer=model_cls(**cfg.model.arch, text_num_embeds=vocab_size, mel_dim=cfg.model.mel_spec.n_mel_channels),
         mel_spec_kwargs=cfg.model.mel_spec,
         vocab_char_map=vocab_char_map,
+        frac_lengths_mask=cfg.model.frac_lengths_mask
     )
 
     # init trainer
