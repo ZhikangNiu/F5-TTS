@@ -26,13 +26,23 @@ from f5_tts.model.modules import (
 )
 
 
+# Language ID embedding
+class LanguageIDEmbedding(nn.Module):
+    def __init__(self, lang_nums,out_dim, padding):
+        super().__init__()
+        self.language_embedding = nn.Embedding(lang_nums,out_dim)
+        self.padding = padding
+
+    def forward(self, x: torch.LongTensor):  # noqa: F722
+        language_id_embedding = self.language_embedding(x)
+        return language_id_embedding
 # Text embedding
 
-
 class TextEmbedding(nn.Module):
-    def __init__(self, text_num_embeds, text_dim, conv_layers=0, conv_mult=2):
+    def __init__(self, text_num_embeds, text_dim, conv_layers=0, conv_mult=2,lang_id_module=None):
         super().__init__()
         self.text_embed = nn.Embedding(text_num_embeds + 1, text_dim)  # use 0 as filler token
+        self.lang_embed = lang_id_module
 
         if conv_layers > 0:
             self.extra_modeling = True
@@ -44,22 +54,31 @@ class TextEmbedding(nn.Module):
         else:
             self.extra_modeling = False
 
-    def forward(self, text: int["b nt"], seq_len, drop_text=False):  # noqa: F722
+    def forward(self, lang, text: int["b nt"], seq_len, drop_text=False):  # noqa: F722
         text = text + 1  # use 0 as filler token. preprocess of batch pad -1, see list_str_to_idx()
         text = text[:, :seq_len]  # curtail if character tokens are more than the mel spec tokens
         batch, text_len = text.shape[0], text.shape[1]
-        text = F.pad(text, (0, seq_len - text_len), value=0)
+        text = F.pad(text, (0, seq_len - text_len), value=0) # a b c -> a b c 0 0 0 0 0
 
         if drop_text:  # cfg for text
             text = torch.zeros_like(text)
-
-        text = self.text_embed(text)  # b n -> b n d
+            lang = torch.zeros_like(lang)
+        
+        text = self.text_embed(text.long())  # b n -> b n d
+        
+        if self.lang_embed is not None:
+            if self.lang_embed.padding:
+                lang = self.lang_embed(lang).expand(-1, text_len, -1) # lang+text, lang+text , lang+text, lang+text, lang+text, pad, pad,pad
+                lang = F.pad(lang, (0, 0, 0,seq_len - text_len), value=0) # same as text padding 需要check这里
+            else:
+                lang = self.lang_embed(lang).expand(-1,text.shape[1],-1) # 不做padding，这样避免了一句话前面是同一种语言，后面切换成另一种语言
+            text = text + lang
 
         # possible extra modeling
         if self.extra_modeling:
             # sinus pos emb
             batch_start = torch.zeros((batch,), dtype=torch.long)
-            pos_idx = get_pos_embed_indices(batch_start, seq_len, max_pos=self.precompute_max_pos)
+            pos_idx = get_pos_embed_indices(batch_start, seq_len, max_pos=self.precompute_max_pos) # 为什么pos embedding还要对padding的部分做
             text_pos_embed = self.freqs_cis[pos_idx]
             text = text + text_pos_embed
 
@@ -106,15 +125,23 @@ class DiT(nn.Module):
         conv_layers=0,
         long_skip_connection=False,
         checkpoint_activations=False,
+        use_lang_id = False,
+        lang_nums = 0,
+        lang_padding = False
     ):
         super().__init__()
 
         self.time_embed = TimestepEmbedding(dim)
+        self.lang_id_embed = None
         if text_dim is None:
             text_dim = mel_dim
-        self.text_embed = TextEmbedding(text_num_embeds, text_dim, conv_layers=conv_layers)
+            
+        if lang_nums > 0 and use_lang_id:
+            self.lang_id_embed = LanguageIDEmbedding(lang_nums,text_dim,lang_padding=lang_padding) # 47 1 512
+        
+        self.text_embed = TextEmbedding(text_num_embeds, text_dim, conv_layers=conv_layers,lang_id_module=self.lang_id_embed)
         self.input_embed = InputEmbedding(mel_dim, text_dim, dim)
-
+        
         self.rotary_embed = RotaryEmbedding(dim_head)
 
         self.dim = dim
@@ -144,6 +171,7 @@ class DiT(nn.Module):
         cond: float["b n d"],  # masked cond audio  # noqa: F722
         text: int["b nt"],  # text  # noqa: F722
         time: float["b"] | float[""],  # time step  # noqa: F821 F722
+        langs: float["b 1"],
         drop_audio_cond,  # cfg for cond audio
         drop_text,  # cfg for text
         mask: bool["b n"] | None = None,  # noqa: F722
@@ -154,7 +182,7 @@ class DiT(nn.Module):
 
         # t: conditioning time, c: context (text + masked cond audio), x: noised input audio
         t = self.time_embed(time)
-        text_embed = self.text_embed(text, seq_len, drop_text=drop_text)
+        text_embed = self.text_embed(langs, text, seq_len, drop_text=drop_text)
         x = self.input_embed(x, cond, text_embed, drop_audio_cond=drop_audio_cond)
 
         rope = self.rotary_embed.forward_from_seq_len(seq_len)

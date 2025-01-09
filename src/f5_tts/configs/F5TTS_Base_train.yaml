@@ -21,6 +21,7 @@ model:
   name: F5TTS_Base  # model name
   tokenizer: pinyin  # tokenizer type
   tokenizer_path: None  # if tokenizer = 'custom', define the path to the tokenizer you want to use (should be vocab.txt)
+  frac_lengths_mask: [0.7,1.0]
   arch:
     dim: 1024
     depth: 22
@@ -29,6 +30,8 @@ model:
     text_dim: 512
     conv_layers: 4
     checkpoint_activations: False  # recompute activations and save memory for extra compute
+    use_lang_id: False # 
+    lang_padding: False # choose padding at the end of text
   mel_spec:
     target_sample_rate: 24000
     n_mel_channels: 100

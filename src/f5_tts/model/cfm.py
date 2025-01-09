@@ -46,6 +46,7 @@ class CFM(nn.Module):
         mel_spec_kwargs: dict = dict(),
         frac_lengths_mask: tuple[float, float] = (0.7, 1.0),
         vocab_char_map: dict[str:int] | None = None,
+        lang_id_map: dict[str:int] | None = None
     ):
         super().__init__()
 
@@ -73,6 +74,7 @@ class CFM(nn.Module):
 
         # vocab map for tokenization
         self.vocab_char_map = vocab_char_map
+        self.lang_id_map = lang_id_map
 
     @property
     def device(self):
@@ -96,6 +98,7 @@ class CFM(nn.Module):
         duplicate_test=False,
         t_inter=0.1,
         edit_mask=None,
+        languages=None
     ):
         self.eval()
         # raw wave
@@ -216,6 +219,7 @@ class CFM(nn.Module):
         *,
         lens: int["b"] | None = None,  # noqa: F821
         noise_scheduler: str | None = None,
+        languages = None
     ):
         # handle raw wave
         if inp.ndim == 2:
@@ -232,7 +236,12 @@ class CFM(nn.Module):
             else:
                 text = list_str_to_tensor(text).to(device)
             assert text.shape[0] == batch
-
+        
+        if languages is not None:
+            langs = list_lang_to_idx(languages,self.lang_id_map).to(device)
+        else:
+            langs = torch.zeros_like(text.shape[0],1).to(device) # B * 1
+        
         # lens and mask
         if not exists(lens):
             lens = torch.full((batch,), seq_len, device=device)
@@ -275,7 +284,7 @@ class CFM(nn.Module):
         # if want rigourously mask out padding, record in collate_fn in dataset.py, and pass in here
         # adding mask will use more memory, thus also need to adjust batchsampler with scaled down threshold for long sequences
         pred = self.transformer(
-            x=φ, cond=cond, text=text, time=time, drop_audio_cond=drop_audio_cond, drop_text=drop_text
+            x=φ, cond=cond, text=text, time=time, drop_audio_cond=drop_audio_cond, drop_text=drop_text,langs=langs
         )
 
         # flow matching loss

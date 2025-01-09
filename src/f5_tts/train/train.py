@@ -7,7 +7,7 @@ import hydra
 
 from f5_tts.model import CFM, DiT, Trainer, UNetT
 from f5_tts.model.dataset import load_dataset
-from f5_tts.model.utils import get_tokenizer
+from f5_tts.model.utils import get_tokenizer,get_lang_id
 
 os.chdir(str(files("f5_tts").joinpath("../..")))  # change working directory to root of project (local editable)
 
@@ -24,6 +24,7 @@ def main(cfg):
     else:
         tokenizer_path = cfg.model.tokenizer_path
     vocab_char_map, vocab_size = get_tokenizer(tokenizer_path, tokenizer)
+    lang_id_map,lang_nums = get_lang_id(tokenizer_path,tokenizer)
 
     # set model
     if "F5TTS" in cfg.model.name:
@@ -33,9 +34,11 @@ def main(cfg):
     wandb_resume_id = None
 
     model = CFM(
-        transformer=model_cls(**cfg.model.arch, text_num_embeds=vocab_size, mel_dim=cfg.model.mel_spec.n_mel_channels),
+        transformer=model_cls(**cfg.model.arch, text_num_embeds=vocab_size, mel_dim=cfg.model.mel_spec.n_mel_channels,lang_nums=lang_nums),
         mel_spec_kwargs=cfg.model.mel_spec,
         vocab_char_map=vocab_char_map,
+        lang_id_map=lang_id_map,
+        frac_lengths_mask=cfg.model.frac_lengths_mask
     )
 
     # init trainer

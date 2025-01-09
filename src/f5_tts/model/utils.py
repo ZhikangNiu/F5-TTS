@@ -130,6 +130,15 @@ def get_tokenizer(dataset_name, tokenizer: str = "pinyin"):
 
     return vocab_char_map, vocab_size
 
+def get_lang_tokenizer(dataset_name, tokenizer: str = "pinyin"):
+    lang_id_path = os.path.join(files("f5_tts").joinpath("../../data"), f"{dataset_name}_{tokenizer}/lang_id.txt")
+    with open(lang_id_path, "r", encoding="utf-8") as f:
+        lang_id_map = {}
+        for i, char in enumerate(f):
+            lang_id_map[char[:-1]] = i
+    lang_nums = len(lang_id_map)
+    assert lang_id_map[" "] == 0, "make sure space is of idx 0 in vocab.txt, cuz 0 is used for unknown char"
+    return lang_id_map, lang_nums
 
 # convert char to pinyin
 
