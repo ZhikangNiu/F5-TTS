@@ -1,7 +1,13 @@
 hydra:
   run:
-    dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
-    
+    dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}
+ckpts:
+  logger: wandb  # wandb | tensorboard | None
+  exp_name: ${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}
+  save_per_updates: 50000  # save checkpoint per steps
+  last_per_steps: 5000  # save last checkpoint per steps
+  save_dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}
+
 datasets:
   name: Emilia_ZH_EN
   batch_size_per_gpu: 38400  # 8 GPUs, 8 * 38400 = 307200
@@ -21,6 +27,7 @@ model:
   name: F5TTS_Small
   tokenizer: pinyin
   tokenizer_path: None  # if tokenizer = 'custom', define the path to the tokenizer you want to use (should be vocab.txt)
+  frac_lengths_mask: [0.7,1.0]
   arch:
     dim: 768
     depth: 18
@@ -28,6 +35,7 @@ model:
     ff_mult: 2
     text_dim: 512
     conv_layers: 4
+    refine_type: "conv"
     checkpoint_activations: False  # recompute activations and save memory for extra compute
   mel_spec:
     target_sample_rate: 24000
@@ -40,8 +48,3 @@ model:
     is_local: False  # use local offline ckpt or not
     local_path: None  # local vocoder path
 
-ckpts:
-  logger: wandb  # wandb | tensorboard | None
-  save_per_updates: 50000  # save checkpoint per steps
-  last_per_steps: 5000  # save last checkpoint per steps
-  save_dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}

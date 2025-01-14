@@ -4,6 +4,8 @@ import os
 from importlib.resources import files
 
 import hydra
+import logging
+from omegaconf import OmegaConf
 
 from f5_tts.model import CFM, DiT, Trainer, UNetT
 from f5_tts.model.dataset import load_dataset
@@ -11,12 +13,15 @@ from f5_tts.model.utils import get_tokenizer
 
 os.chdir(str(files("f5_tts").joinpath("../..")))  # change working directory to root of project (local editable)
 
+logger = logging.getLogger(__file__)
+logger.setLevel(logging.INFO)
 
 @hydra.main(version_base="1.3", config_path=str(files("f5_tts").joinpath("configs")), config_name=None)
 def main(cfg):
     tokenizer = cfg.model.tokenizer
     mel_spec_type = cfg.model.mel_spec.mel_spec_type
-    exp_name = f"{cfg.model.name}_{mel_spec_type}_{cfg.model.tokenizer}_{cfg.datasets.name}"
+    exp_name = cfg.ckpts.exp_name
+    logger.info(OmegaConf.to_yaml(cfg))
 
     # set text tokenizer
     if tokenizer != "custom":
@@ -37,6 +42,7 @@ def main(cfg):
         mel_spec_kwargs=cfg.model.mel_spec,
         vocab_char_map=vocab_char_map,
     )
+    logger.info(model)
 
     # init trainer
     trainer = Trainer(

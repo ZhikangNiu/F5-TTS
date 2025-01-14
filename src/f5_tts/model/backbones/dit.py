@@ -26,24 +26,57 @@ from f5_tts.model.modules import (
 )
 
 
+
+
+class SLSTM(nn.Module):
+    """
+    LSTM without worrying about the hidden state, nor the layout of the data.
+    Expects input as convolutional layout.
+    """
+    def __init__(self, dimension: int, num_layers: int = 2, skip: bool = True):
+        super().__init__()
+        self.skip = skip
+        self.lstm = nn.LSTM(dimension, dimension, num_layers)
+
+    def forward(self, x):
+        y, _ = self.lstm(x)
+        if self.skip:
+            y = y + x
+        return y
+
 # Text embedding
-
-
 class TextEmbedding(nn.Module):
-    def __init__(self, text_num_embeds, text_dim, conv_layers=0, conv_mult=2):
+    def __init__(self, text_num_embeds, text_dim, conv_layers=0, conv_mult=2, refine_type="conv"):
         super().__init__()
         self.text_embed = nn.Embedding(text_num_embeds + 1, text_dim)  # use 0 as filler token
-
-        if conv_layers > 0:
+        if refine_type == "conv":
+            if conv_layers > 0:
+                self.extra_modeling = True
+                self.precompute_max_pos = 4096  # ~44s of 24khz audio
+                self.register_buffer("freqs_cis", precompute_freqs_cis(text_dim, self.precompute_max_pos), persistent=False)
+                self.text_blocks = nn.Sequential(
+                    *[ConvNeXtV2Block(text_dim, text_dim * conv_mult) for _ in range(conv_layers)]
+                )
+            else:
+                self.extra_modeling = False
+        elif refine_type == "conv_bilstm":
+            if conv_layers > 0:
+                self.extra_modeling = True
+                self.precompute_max_pos = 4096  # ~44s of 24khz audio
+                self.register_buffer("freqs_cis", precompute_freqs_cis(text_dim, self.precompute_max_pos), persistent=False)
+                self.text_blocks = nn.Sequential(
+                    *[ConvNeXtV2Block(text_dim, text_dim * conv_mult) for _ in range(conv_layers)],
+                    SLSTM(dimension=text_dim,num_layers=2,skip=True)
+                )
+            else:
+                self.extra_modeling = False
+        elif refine_type == "transformer_encoder":
             self.extra_modeling = True
             self.precompute_max_pos = 4096  # ~44s of 24khz audio
             self.register_buffer("freqs_cis", precompute_freqs_cis(text_dim, self.precompute_max_pos), persistent=False)
-            self.text_blocks = nn.Sequential(
-                *[ConvNeXtV2Block(text_dim, text_dim * conv_mult) for _ in range(conv_layers)]
-            )
-        else:
-            self.extra_modeling = False
-
+            text_layer = nn.TransformerEncoderLayer(d_model=text_dim,nhead=4)
+            self.text_blocks = nn.TransformerEncoder(text_layer,num_layers=conv_layers)
+            
     def forward(self, text: int["b nt"], seq_len, drop_text=False):  # noqa: F722
         text = text + 1  # use 0 as filler token. preprocess of batch pad -1, see list_str_to_idx()
         text = text[:, :seq_len]  # curtail if character tokens are more than the mel spec tokens
@@ -106,13 +139,14 @@ class DiT(nn.Module):
         conv_layers=0,
         long_skip_connection=False,
         checkpoint_activations=False,
+        refine_type="conv"
     ):
         super().__init__()
 
         self.time_embed = TimestepEmbedding(dim)
         if text_dim is None:
             text_dim = mel_dim
-        self.text_embed = TextEmbedding(text_num_embeds, text_dim, conv_layers=conv_layers)
+        self.text_embed = TextEmbedding(text_num_embeds, text_dim, conv_layers=conv_layers,refine_type=refine_type)
         self.input_embed = InputEmbedding(mel_dim, text_dim, dim)
 
         self.rotary_embed = RotaryEmbedding(dim_head)

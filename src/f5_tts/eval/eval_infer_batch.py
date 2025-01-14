@@ -50,6 +50,7 @@ def main():
     parser.add_argument("-to", "--tokenizer", default="pinyin", type=str, choices=["pinyin", "char"])
 
     parser.add_argument("-nfe", "--nfestep", default=32, type=int)
+    parser.add_argument("--cfg", default=2.0, type=float)
     parser.add_argument("-o", "--odemethod", default="euler")
     parser.add_argument("-ss", "--swaysampling", default=-1, type=float)
 
@@ -72,30 +73,38 @@ def main():
     testset = args.testset
 
     infer_batch_size = 1  # max frames. 1 for ddp single inference (recommended)
-    cfg_strength = 2.0
+    cfg_strength = args.cfg
     speed = 1.0
     use_truth_duration = False
     no_ref_audio = False
 
-    if exp_name == "F5TTS_Base":
+    if "F5TTS_Base" in exp_name:
         model_cls = DiT
         model_cfg = dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4)
-
-    elif exp_name == "E2TTS_Base":
+    
+    if "F5TTS_Small" in exp_name:
+        model_cls = DiT
+        model_cfg = dict(dim=768, depth=18, heads=12, ff_mult=2, text_dim=512, conv_layers=4)
+    
+    if "F5TTS_Small" in exp_name and "text_encoder_transformer" in exp_name:
+        model_cls = DiT
+        model_cfg = dict(dim=768, depth=18, heads=12, ff_mult=2, text_dim=512, conv_layers=4,refine_type="transformer_encoder")
+    
+    if exp_name == "E2TTS_Base":
         model_cls = UNetT
         model_cfg = dict(dim=1024, depth=24, heads=16, ff_mult=4)
 
     if testset == "ls_pc_test_clean":
         metalst = rel_path + "/data/librispeech_pc_test_clean_cross_sentence.lst"
-        librispeech_test_clean_path = "<SOME_PATH>/LibriSpeech/test-clean"  # test-clean path
+        librispeech_test_clean_path = "/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/public/public_datas/speech/LibriSpeech/test-clean"  # test-clean path
         metainfo = get_librispeech_test_clean_metainfo(metalst, librispeech_test_clean_path)
 
     elif testset == "seedtts_test_zh":
-        metalst = rel_path + "/data/seedtts_testset/zh/meta.lst"
+        metalst = "/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/niuzhikang-240108120093/dev_f5_be53fb1/seed-tts-eval/seedtts_testset/en/meta.lst"
         metainfo = get_seedtts_testset_metainfo(metalst)
 
     elif testset == "seedtts_test_en":
-        metalst = rel_path + "/data/seedtts_testset/en/meta.lst"
+        metalst = "/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/niuzhikang-240108120093/dev_f5_be53fb1/seed-tts-eval/seedtts_testset/en/meta.lst"
         metainfo = get_seedtts_testset_metainfo(metalst)
 
     # path to save genereted wavs
@@ -127,9 +136,9 @@ def main():
     )
 
     # Vocoder model
-    local = False
+    local = True
     if mel_spec_type == "vocos":
-        vocoder_local_path = "../checkpoints/charactr/vocos-mel-24khz"
+        vocoder_local_path = "/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/niuzhikang-240108120093/dev_f5_be53fb1/checkpoints/vocos-mel-24khz"
     elif mel_spec_type == "bigvgan":
         vocoder_local_path = "../checkpoints/bigvgan_v2_24khz_100band_256x"
     vocoder = load_vocoder(vocoder_name=mel_spec_type, is_local=local, local_path=vocoder_local_path)

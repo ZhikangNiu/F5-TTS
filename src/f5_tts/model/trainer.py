@@ -5,6 +5,7 @@ import os
 
 import torch
 import torchaudio
+import logging
 import wandb
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
@@ -20,6 +21,8 @@ from f5_tts.model.utils import default, exists
 
 # trainer
 
+logger = logging.getLogger(__file__)
+logger.setLevel(logging.INFO)
 
 class Trainer:
     def __init__(
@@ -274,7 +277,6 @@ class Trainer:
             skipped_epoch = 0
 
         for epoch in range(skipped_epoch, self.epochs):
-            self.model.train()
             if exists(resumable_with_seed) and epoch == skipped_epoch:
                 progress_bar = tqdm(
                     skipped_dataloader,
@@ -293,6 +295,7 @@ class Trainer:
                 )
 
             for batch in progress_bar:
+                self.model.train()
                 with self.accelerator.accumulate(self.model):
                     text_inputs = batch["text"]
                     mel_spec = batch["mel"].permute(0, 2, 1)
@@ -332,6 +335,7 @@ class Trainer:
                     self.save_checkpoint(global_step)
 
                     if self.log_samples and self.accelerator.is_local_main_process:
+                        logger.info(f"Step {global_step}, Loss {loss.item()}, Lr {self.scheduler.get_last_lr()[0]}")
                         ref_audio_len = mel_lengths[0]
                         infer_text = [
                             text_inputs[0] + ([" "] if isinstance(text_inputs[0], list) else " ") + text_inputs[0]
