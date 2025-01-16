@@ -49,6 +49,7 @@ class TextEmbedding(nn.Module):
     def __init__(self, text_num_embeds, text_dim, conv_layers=0, conv_mult=2, refine_type="conv"):
         super().__init__()
         self.text_embed = nn.Embedding(text_num_embeds + 1, text_dim)  # use 0 as filler token
+        self.refine_type = refine_type
         if refine_type == "conv":
             if conv_layers > 0:
                 self.extra_modeling = True
@@ -66,7 +67,7 @@ class TextEmbedding(nn.Module):
                 self.register_buffer("freqs_cis", precompute_freqs_cis(text_dim, self.precompute_max_pos), persistent=False)
                 self.text_blocks = nn.Sequential(
                     *[ConvNeXtV2Block(text_dim, text_dim * conv_mult) for _ in range(conv_layers)],
-                    SLSTM(dimension=text_dim,num_layers=2,skip=True)
+                    SLSTM(dimension=text_dim,num_layers=2,skip=False)
                 )
             else:
                 self.extra_modeling = False
@@ -74,7 +75,7 @@ class TextEmbedding(nn.Module):
             self.extra_modeling = True
             self.precompute_max_pos = 4096  # ~44s of 24khz audio
             self.register_buffer("freqs_cis", precompute_freqs_cis(text_dim, self.precompute_max_pos), persistent=False)
-            text_layer = nn.TransformerEncoderLayer(d_model=text_dim,nhead=4)
+            text_layer = nn.TransformerEncoderLayer(d_model=text_dim,nhead=8,batch_first=True)
             self.text_blocks = nn.TransformerEncoder(text_layer,num_layers=conv_layers)
             
     def forward(self, text: int["b nt"], seq_len, drop_text=False):  # noqa: F722
@@ -82,6 +83,7 @@ class TextEmbedding(nn.Module):
         text = text[:, :seq_len]  # curtail if character tokens are more than the mel spec tokens
         batch, text_len = text.shape[0], text.shape[1]
         text = F.pad(text, (0, seq_len - text_len), value=0)
+        src_key_padding_mask = (text == 0) # shape: [batch_size, seq_len], True 表示需要被 mask 的位置
 
         if drop_text:  # cfg for text
             text = torch.zeros_like(text)
@@ -97,7 +99,11 @@ class TextEmbedding(nn.Module):
             text = text + text_pos_embed
 
             # convnextv2 blocks
-            text = self.text_blocks(text)
+            if self.refine_type in ["conv_bilstm","conv"]:
+                text = self.text_blocks(text)
+            elif self.refine_type == "transformer_encoder":
+                print(f"all text length {text.shape[1]}, padding mask {torch.sum(src_key_padding_mask).item()}")
+                text = self.text_blocks(text,src_key_padding_mask=src_key_padding_mask)
 
         return text
 
