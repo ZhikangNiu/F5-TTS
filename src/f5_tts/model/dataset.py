@@ -10,6 +10,7 @@ from datasets import load_from_disk
 from torch import nn
 from torch.utils.data import Dataset, Sampler
 from tqdm import tqdm
+import numpy as np
 
 from f5_tts.model.modules import MelSpec
 from f5_tts.model.utils import default
@@ -129,34 +130,48 @@ class CustomDataset(Dataset):
     def __getitem__(self, index):
         while True:
             row = self.data[index]
-            audio_path = row["audio_path"]
-            text = row["text"]
-            duration = row["duration"]
-
-            # filter by given length
-            if 0.3 <= duration <= 30:
-                break  # valid
-
+            audio_path = row["audio_path"] # 替换path，然后修改成npy
+            
+            if self.mel_spec_type == "latent":
+                audio_path = audio_path.replace("public/public_datas/speech/LibriTTS","niuzhikang-240108120093/descript-audio-codec/LibriTTS/feat").replace(".wav",".npy")
+                mel_spec = torch.from_numpy(np.load(audio_path))
+                duration = mel_spec.shape[-1]
+                # duration = row["duration"]
+            text = row["text"]    
+            if self.mel_spec_type in ["vocos","bigvgan"]:
+                duration = row["duration"]
+                if 0.3 <= duration <= 30:
+                    break  # valid
+            elif self.mel_spec_type == "latent":
+                if 5 <= duration:
+                    break
             index = (index + 1) % len(self.data)
 
-        if self.preprocessed_mel:
-            mel_spec = torch.tensor(row["mel_spec"])
-        else:
-            audio, source_sample_rate = torchaudio.load(audio_path)
+        if self.mel_spec_type in ["vocos","bigvgan"]:
+            # filter by given length
 
-            # make sure mono input
-            if audio.shape[0] > 1:
-                audio = torch.mean(audio, dim=0, keepdim=True)
+            if self.preprocessed_mel:
+                mel_spec = torch.tensor(row["mel_spec"])
+            else:
+                audio, source_sample_rate = torchaudio.load(audio_path)
 
-            # resample if necessary
-            if source_sample_rate != self.target_sample_rate:
-                resampler = torchaudio.transforms.Resample(source_sample_rate, self.target_sample_rate)
-                audio = resampler(audio)
+                # make sure mono input
+                if audio.shape[0] > 1:
+                    audio = torch.mean(audio, dim=0, keepdim=True)
 
-            # to mel spectrogram
-            mel_spec = self.mel_spectrogram(audio)
-            mel_spec = mel_spec.squeeze(0)  # '1 d t -> d t'
+                # resample if necessary
+                if source_sample_rate != self.target_sample_rate:
+                    resampler = torchaudio.transforms.Resample(source_sample_rate, self.target_sample_rate)
+                    audio = resampler(audio)
 
+                # to mel spectrogram
+                mel_spec = self.mel_spectrogram(audio)
+                mel_spec = mel_spec.squeeze(0)  # '1 d t -> d t'
+        elif self.mel_spec_type == "latent":
+            mel_spec = mel_spec.squeeze(0)
+            
+        
+        
         return {
             "mel_spec": mel_spec,
             "text": text,

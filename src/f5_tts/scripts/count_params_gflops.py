@@ -32,8 +32,28 @@ duration = 20
 frame_length = int(duration * target_sample_rate / hop_length)
 text_length = 150
 
-flops, params = thop.profile(
-    model, inputs=(torch.randn(1, frame_length, n_mel_channels), torch.zeros(1, text_length, dtype=torch.long))
-)
-print(f"FLOPs: {flops / 1e9} G")
-print(f"Params: {params / 1e6} M")
+# flops, params = thop.profile(
+#     model, inputs=(torch.randn(1, frame_length, n_mel_channels), torch.zeros(1, text_length, dtype=torch.long))
+# )
+# print(f"FLOPs: {flops / 1e9} G")
+# print(f"Params: {params / 1e6} M")
+# print(model)
+def count_parameters(model):  
+    """count model parameters
+
+    Args:
+        model (nn.Module): model
+
+    Returns:
+        _type_: the model's parameters which are requires_grad
+    """
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)  
+print(f"{count_parameters(model.transformer.text_embed.text_blocks)/1e6}")
+
+import torch.nn as nn
+encoder_layer = nn.TransformerEncoderLayer(d_model=512, nhead=8)
+transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=4)
+print(f"{count_parameters(transformer_encoder)/1e6}")
+src = torch.rand(10, 32, 512)
+out = transformer_encoder(src)
+print(out.shape)

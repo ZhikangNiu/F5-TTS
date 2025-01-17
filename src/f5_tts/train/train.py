@@ -56,7 +56,7 @@ def main(cfg):
         wandb_run_name=exp_name,
         wandb_resume_id=wandb_resume_id,
         last_per_steps=cfg.ckpts.last_per_steps,
-        log_samples=True,
+        log_samples=False,
         bnb_optimizer=cfg.optim.bnb_optimizer,
         mel_spec_type=mel_spec_type,
         is_local_vocoder=cfg.model.vocoder.is_local,
