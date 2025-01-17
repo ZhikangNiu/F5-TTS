@@ -16,7 +16,7 @@ mkdir -p "$log_dir"
 
 
 # for weight in 0.75 1.25 ; do
-for ckpt in 100000 200000; do
+for ckpt in 300000 400000; do
     for task in wer sim;do
         log_file="${log_dir}/${ckpt}_log.txt"
         echo "Task: $task" | tee -a "$log_file"
