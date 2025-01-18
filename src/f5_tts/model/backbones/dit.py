@@ -100,12 +100,9 @@ class TextEmbedding(nn.Module):
 
             # convnextv2 blocks
             if self.refine_type in ["conv_bilstm","conv"]:
-                if self.training:
-                    for layer in self.text_blocks:
-                        text = layer(text)
-                        text = text.masked_fill(src_key_padding_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)),0.0)
-                else:
-                    text = self.text_blocks(text)
+                for layer in self.text_blocks:
+                    text = layer(text)
+                    text = text.masked_fill(src_key_padding_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)),0.0)
             elif self.refine_type == "transformer_encoder":
                 text = self.text_blocks(text,src_key_padding_mask=src_key_padding_mask)
         return text
