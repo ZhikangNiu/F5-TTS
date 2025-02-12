@@ -63,7 +63,7 @@ def main(cfg):
         local_vocoder_path=cfg.model.vocoder.local_path,
     )
 
-    train_dataset = load_dataset(cfg.datasets.name, tokenizer, mel_spec_kwargs=cfg.model.mel_spec)
+    train_dataset = load_dataset(cfg.datasets.name, tokenizer, mel_spec_kwargs=cfg.model.mel_spec,latent_frames=cfg.model.latent_frames,latent_path=cfg.model.latent_path)
     trainer.train(
         train_dataset,
         num_workers=cfg.datasets.num_workers,

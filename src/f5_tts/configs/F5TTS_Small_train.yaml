@@ -21,6 +21,8 @@ model:
   name: F5TTS_Small
   tokenizer: pinyin
   tokenizer_path: None  # if tokenizer = 'custom', define the path to the tokenizer you want to use (should be vocab.txt)
+  latent_frames: 50
+  latent_path: None
   arch:
     dim: 768
     depth: 18

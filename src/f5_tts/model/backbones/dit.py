@@ -49,6 +49,7 @@ class TextEmbedding(nn.Module):
         text = text[:, :seq_len]  # curtail if character tokens are more than the mel spec tokens
         batch, text_len = text.shape[0], text.shape[1]
         text = F.pad(text, (0, seq_len - text_len), value=0)
+        src_key_padding_mask = (text == 0)
 
         if drop_text:  # cfg for text
             text = torch.zeros_like(text)
@@ -64,7 +65,10 @@ class TextEmbedding(nn.Module):
             text = text + text_pos_embed
 
             # convnextv2 blocks
-            text = self.text_blocks(text)
+            # text = self.text_blocks(text)
+            for layer in self.text_blocks:
+                text = layer(text)
+                text = text.masked_fill(src_key_padding_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)),0.0)
 
         return text
 

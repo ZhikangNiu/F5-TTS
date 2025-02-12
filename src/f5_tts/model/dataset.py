@@ -11,7 +11,7 @@ from torch import nn
 from torch.utils.data import Dataset, Sampler
 from tqdm import tqdm
 import numpy as np
-
+from pathlib import Path
 from f5_tts.model.modules import MelSpec
 from f5_tts.model.utils import default
 
@@ -94,6 +94,8 @@ class CustomDataset(Dataset):
         mel_spec_type="vocos",
         preprocessed_mel=False,
         mel_spec_module: nn.Module | None = None,
+        latent_frames=30,
+        latent_path=None
     ):
         self.data = custom_dataset
         self.durations = durations
@@ -103,7 +105,15 @@ class CustomDataset(Dataset):
         self.win_length = win_length
         self.mel_spec_type = mel_spec_type
         self.preprocessed_mel = preprocessed_mel
-
+        self.latent_frames = latent_frames
+        if mel_spec_type == "latent":
+            if eval(latent_path) == None:
+                self.latent_path = f"niuzhikang-240108120093/descript-audio-codec/LibriTTS/{self.latent_frames}hz_feat/"
+            else:
+                self.latent_path = str(Path(latent_path).relative_to("/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/"))
+            # logger.info(f"self.latent_path:{self.latent_path}")
+            print(f"self.latent_path:{self.latent_path}")
+        
         if not preprocessed_mel:
             self.mel_spectrogram = default(
                 mel_spec_module,
@@ -133,8 +143,8 @@ class CustomDataset(Dataset):
             audio_path = row["audio_path"] # 替换path，然后修改成npy
             
             if self.mel_spec_type == "latent":
-                audio_path = audio_path.replace("public/public_datas/speech/LibriTTS","niuzhikang-240108120093/descript-audio-codec/LibriTTS/feat").replace(".wav",".npy")
-                mel_spec = torch.from_numpy(np.load(audio_path))
+                audio_path = audio_path.replace("public/public_datas/speech/LibriTTS",self.latent_path).replace(".wav",".npy")
+                mel_spec = torch.from_numpy(np.load(audio_path)) # 1,dim,t
                 duration = mel_spec.shape[-1]
                 # duration = row["duration"]
             text = row["text"]    
@@ -251,6 +261,8 @@ def load_dataset(
     audio_type: str = "raw",
     mel_spec_module: nn.Module | None = None,
     mel_spec_kwargs: dict = dict(),
+    latent_frames=30,
+    latent_path=None
 ) -> CustomDataset | HFDataset:
     """
     dataset_type    - "CustomDataset" if you want to use tokenizer name and default data path to load for train_dataset
@@ -278,6 +290,8 @@ def load_dataset(
             durations=durations,
             preprocessed_mel=preprocessed_mel,
             mel_spec_module=mel_spec_module,
+            latent_frames=latent_frames,
+            latent_path=latent_path,
             **mel_spec_kwargs,
         )
 

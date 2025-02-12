@@ -11,9 +11,10 @@ import torch
 import torchaudio
 from accelerate import Accelerator
 from tqdm import tqdm
-
+import numpy as np
 from f5_tts.eval.utils_eval import (
     get_inference_prompt,
+    get_latent_inference_prompt,
     get_librispeech_test_clean_metainfo,
     get_seedtts_testset_metainfo,
 )
@@ -46,7 +47,8 @@ def main():
     parser.add_argument("-d", "--dataset", default="Emilia_ZH_EN")
     parser.add_argument("-n", "--expname", required=True)
     parser.add_argument("-c", "--ckptstep", default=1200000, type=int)
-    parser.add_argument("-m", "--mel_spec_type", default="vocos", type=str, choices=["bigvgan", "vocos"])
+    parser.add_argument("-m", "--mel_spec_type", default="vocos", type=str, choices=["bigvgan", "vocos","latent"])
+    parser.add_argument("--latent_frames",default=30,type=int)
     parser.add_argument("-to", "--tokenizer", default="pinyin", type=str, choices=["pinyin", "char"])
 
     parser.add_argument("-nfe", "--nfestep", default=32, type=int)
@@ -63,6 +65,7 @@ def main():
     ckpt_step = args.ckptstep
     ckpt_path = rel_path + f"/ckpts/{exp_name}/model_{ckpt_step}.pt"
     mel_spec_type = args.mel_spec_type
+    latent_frames = args.latent_frames if mel_spec_type == "latent" else 93.75
     tokenizer = args.tokenizer
 
     nfe_step = args.nfestep
@@ -81,21 +84,33 @@ def main():
         model_cls = DiT
         model_cfg = dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4)
 
-    elif exp_name == "E2TTS_Base":
+    if exp_name == "E2TTS_Base":
         model_cls = UNetT
         model_cfg = dict(dim=1024, depth=24, heads=16, ff_mult=4)
+    
+    if "F5TTS_Small" in exp_name:
+        model_cls = DiT
+        model_cfg = dict(dim=768, depth=18, heads=12, ff_mult=2, text_dim=512, conv_layers=4)
+    
+    if exp_name == "F5TTS_Small_vocos_char_LibriTTS_100_360_500_38400_latent_30hz_bzs102400_msk0.4-0.7":
+        model_cls = DiT
+        model_cfg = dict(dim=768, depth=18, heads=12, ff_mult=2, text_dim=512, conv_layers=4)
+    
+    if exp_name == "F5TTS_Small_vocos_char_LibriTTS_100_360_500_latent_30hz_bzs102400_msk0.4-0.7_convlayer0":
+        model_cls = DiT
+        model_cfg = dict(dim=768, depth=18, heads=12, ff_mult=2, text_dim=512, conv_layers=0)
 
     if testset == "ls_pc_test_clean":
         metalst = rel_path + "/data/librispeech_pc_test_clean_cross_sentence.lst"
-        librispeech_test_clean_path = "<SOME_PATH>/LibriSpeech/test-clean"  # test-clean path
+        librispeech_test_clean_path = "/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/public/public_datas/speech/LibriSpeech/test-clean"  # test-clean path
         metainfo = get_librispeech_test_clean_metainfo(metalst, librispeech_test_clean_path)
 
     elif testset == "seedtts_test_zh":
-        metalst = rel_path + "/data/seedtts_testset/zh/meta.lst"
+        metalst = "/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/niuzhikang-240108120093/dev_f5_be53fb1/seed-tts-eval/seedtts_testset/en/meta.lst"
         metainfo = get_seedtts_testset_metainfo(metalst)
 
     elif testset == "seedtts_test_en":
-        metalst = rel_path + "/data/seedtts_testset/en/meta.lst"
+        metalst = "/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/niuzhikang-240108120093/dev_f5_be53fb1/seed-tts-eval/seedtts_testset/en/meta.lst"
         metainfo = get_seedtts_testset_metainfo(metalst)
 
     # path to save genereted wavs
@@ -112,39 +127,55 @@ def main():
     # -------------------------------------------------#
 
     use_ema = True
-
-    prompts_all = get_inference_prompt(
-        metainfo,
-        speed=speed,
-        tokenizer=tokenizer,
-        target_sample_rate=target_sample_rate,
-        n_mel_channels=n_mel_channels,
-        hop_length=hop_length,
-        mel_spec_type=mel_spec_type,
-        target_rms=target_rms,
-        use_truth_duration=use_truth_duration,
-        infer_batch_size=infer_batch_size,
-    )
+    if mel_spec_type in ["bigvgan", "vocos"]:
+        prompts_all = get_inference_prompt(
+            metainfo,
+            speed=speed,
+            tokenizer=tokenizer,
+            target_sample_rate=target_sample_rate,
+            n_mel_channels=n_mel_channels,
+            hop_length=hop_length,
+            mel_spec_type=mel_spec_type,
+            target_rms=target_rms,
+            use_truth_duration=use_truth_duration,
+            infer_batch_size=infer_batch_size,
+        )
+    elif mel_spec_type == "latent":
+        prompts_all = get_latent_inference_prompt(
+            metainfo,
+            speed=speed,
+            tokenizer=tokenizer,
+            target_sample_rate=target_sample_rate,
+            n_mel_channels=128,
+            hop_length=int(target_sample_rate//latent_frames), # not sure
+            mel_spec_type=mel_spec_type,
+            target_rms=target_rms,
+            use_truth_duration=use_truth_duration,
+            infer_batch_size=infer_batch_size,
+            latent_frames=latent_frames
+        )
 
     # Vocoder model
     local = False
-    if mel_spec_type == "vocos":
-        vocoder_local_path = "../checkpoints/charactr/vocos-mel-24khz"
-    elif mel_spec_type == "bigvgan":
-        vocoder_local_path = "../checkpoints/bigvgan_v2_24khz_100band_256x"
-    vocoder = load_vocoder(vocoder_name=mel_spec_type, is_local=local, local_path=vocoder_local_path)
+    if mel_spec_type != "latent":
+        if mel_spec_type == "vocos":
+            vocoder_local_path = "../checkpoints/charactr/vocos-mel-24khz"
+        elif mel_spec_type == "bigvgan":
+            vocoder_local_path = "../checkpoints/bigvgan_v2_24khz_100band_256x"
+        vocoder = load_vocoder(vocoder_name=mel_spec_type, is_local=local, local_path=vocoder_local_path)
 
     # Tokenizer
     vocab_char_map, vocab_size = get_tokenizer(dataset_name, tokenizer)
 
     # Model
+    n_mel_channels = 128 if mel_spec_type == "latent" else n_mel_channels
     model = CFM(
         transformer=model_cls(**model_cfg, text_num_embeds=vocab_size, mel_dim=n_mel_channels),
         mel_spec_kwargs=dict(
             n_fft=n_fft,
             hop_length=hop_length,
             win_length=win_length,
-            n_mel_channels=n_mel_channels,
+            n_mel_channels= n_mel_channels ,
             target_sample_rate=target_sample_rate,
             mel_spec_type=mel_spec_type,
         ),
@@ -174,8 +205,8 @@ def main():
             # Inference
             with torch.inference_mode():
                 generated, _ = model.sample(
-                    cond=ref_mels,
-                    text=final_text_list,
+                    cond=ref_mels, # cond是mel频谱图
+                    text=final_text_list, # 文本
                     duration=total_mel_lens,
                     lens=ref_mel_lens,
                     steps=nfe_step,
@@ -188,14 +219,19 @@ def main():
                 for i, gen in enumerate(generated):
                     gen = gen[ref_mel_lens[i] : total_mel_lens[i], :].unsqueeze(0)
                     gen_mel_spec = gen.permute(0, 2, 1).to(torch.float32)
-                    if mel_spec_type == "vocos":
-                        generated_wave = vocoder.decode(gen_mel_spec).cpu()
-                    elif mel_spec_type == "bigvgan":
-                        generated_wave = vocoder(gen_mel_spec).squeeze(0).cpu()
+                    if mel_spec_type in ["vocos","bigvgan"]:
+                        if mel_spec_type == "vocos":
+                            generated_wave = vocoder.decode(gen_mel_spec).cpu()
+                        elif mel_spec_type == "bigvgan":
+                            generated_wave = vocoder(gen_mel_spec).squeeze(0).cpu()
+                        if ref_rms_list[i] < target_rms:
+                            generated_wave = generated_wave * ref_rms_list[i] / target_rms
+                            torchaudio.save(f"{output_dir}/{utts[i]}.wav", generated_wave, target_sample_rate)
+                    elif mel_spec_type == "latent":
+                        np.save(f"{output_dir}/{utts[i]}.npy",gen_mel_spec.cpu().numpy())
+                        
 
-                    if ref_rms_list[i] < target_rms:
-                        generated_wave = generated_wave * ref_rms_list[i] / target_rms
-                    torchaudio.save(f"{output_dir}/{utts[i]}.wav", generated_wave, target_sample_rate)
+
 
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
