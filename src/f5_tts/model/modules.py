@@ -18,6 +18,7 @@ import torchaudio
 from librosa.filters import mel as librosa_mel_fn
 from torch import nn
 from x_transformers.x_transformers import apply_rotary_pos_emb
+from x_transformers import RMSNorm
 
 
 # raw wav to mel spec
@@ -272,7 +273,6 @@ class ConvNeXtV2Block(nn.Module):
 # AdaLayerNormZero
 # return with modulated x for attn input, and params for later mlp modulation
 
-
 class AdaLayerNormZero(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -289,6 +289,21 @@ class AdaLayerNormZero(nn.Module):
         x = self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
         return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
+class AdaRMSNormZero(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+
+        self.silu = nn.SiLU()
+        self.linear = nn.Linear(dim, dim * 6)
+
+        self.norm = RMSNorm(dim)
+
+    def forward(self, x, emb=None):
+        emb = self.linear(self.silu(emb))
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = torch.chunk(emb, 6, dim=1)
+
+        x = self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
+        return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
 # AdaLayerNormZero for final layer
 # return only with modulated x for attn input, cuz no more mlp modulation
@@ -310,22 +325,61 @@ class AdaLayerNormZero_Final(nn.Module):
         x = self.norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
         return x
 
+class AdaRMSNormZero_Final(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+
+        self.silu = nn.SiLU()
+        self.linear = nn.Linear(dim, dim * 2)
+
+        self.norm = nn.RMSNorm(dim)
+
+    def forward(self, x, emb):
+        emb = self.linear(self.silu(emb))
+        scale, shift = torch.chunk(emb, 2, dim=1)
+
+        x = self.norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
+        return x
 
 # FeedForward
 
-
 class FeedForward(nn.Module):
-    def __init__(self, dim, dim_out=None, mult=4, dropout=0.0, approximate: str = "none"):
+    def __init__(
+        self,
+        dim: int,
+        mult: int = 4,
+        dropout: float = 0.0,
+        approximate: str = "none",
+        silu_ff: bool = False  # 是否使用 SiLU 的新 FeedForward 结构
+    ):
         super().__init__()
-        inner_dim = int(dim * mult)
-        dim_out = dim_out if dim_out is not None else dim
+        self.silu_ff = silu_ff
 
-        activation = nn.GELU(approximate=approximate)
-        project_in = nn.Sequential(nn.Linear(dim, inner_dim), activation)
-        self.ff = nn.Sequential(project_in, nn.Dropout(dropout), nn.Linear(inner_dim, dim_out))
+        if silu_ff:
+            # 新的 SiLU FeedForward 结构
+            # hidden_dim = int(2 * hidden_dim / 3) if hidden_dim else 0
+            hidden_dim = int(dim * mult)
+            self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+            self.w2 = nn.Linear(hidden_dim, dim, bias=False)
+            self.w3 = nn.Linear(dim, hidden_dim, bias=False)
+            # print("Use Silu FeedForward")
+        else:
+            # 旧的 FeedForward 结构
+            inner_dim = int(dim * mult)
+            activation = nn.GELU(approximate=approximate)
+            project_in = nn.Sequential(nn.Linear(dim, inner_dim), activation)
+            self.ff = nn.Sequential(project_in, nn.Dropout(dropout), nn.Linear(inner_dim, dim))
 
+    @torch.compile
+    def _forward_silu_gating(self, x1, x3):
+        return F.silu(x1) * x3
+    
     def forward(self, x):
-        return self.ff(x)
+        if self.silu_ff:
+            return self.w2(self._forward_silu_gating(self.w1(x), self.w3(x)))
+        else:
+            return self.ff(x)
+
 
 
 # Attention with possible joint part
@@ -410,6 +464,13 @@ class AttnProcessor:
         key = attn.to_k(x)
         value = attn.to_v(x)
 
+        # attention
+        inner_dim = key.shape[-1]
+        head_dim = inner_dim // attn.heads
+        query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+        key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+        value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+        
         # apply rotary position embedding
         if rope is not None:
             freqs, xpos_scale = rope
@@ -417,13 +478,6 @@ class AttnProcessor:
 
             query = apply_rotary_pos_emb(query, freqs, q_xpos_scale)
             key = apply_rotary_pos_emb(key, freqs, k_xpos_scale)
-
-        # attention
-        inner_dim = key.shape[-1]
-        head_dim = inner_dim // attn.heads
-        query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
-        key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
-        value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
 
         # mask. e.g. inference got a batch with different target durations, mask out the padding
         if mask is not None:
@@ -540,10 +594,15 @@ class JointAttnProcessor:
 
 
 class DiTBlock(nn.Module):
-    def __init__(self, dim, heads, dim_head, ff_mult=4, dropout=0.1):
+    def __init__(self, dim, heads, dim_head, ff_mult=4, dropout=0.1,norm_type="ln",silu_ff=False):
         super().__init__()
-
-        self.attn_norm = AdaLayerNormZero(dim)
+        if norm_type == "ln":        
+            self.attn_norm = AdaLayerNormZero(dim)
+            self.ff_norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
+        elif norm_type == "rmsnorm":
+            self.attn_norm = AdaRMSNormZero(dim)
+            self.ff_norm = RMSNorm(dim)
+            
         self.attn = Attention(
             processor=AttnProcessor(),
             dim=dim,
@@ -552,8 +611,7 @@ class DiTBlock(nn.Module):
             dropout=dropout,
         )
 
-        self.ff_norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
-        self.ff = FeedForward(dim=dim, mult=ff_mult, dropout=dropout, approximate="tanh")
+        self.ff = FeedForward(dim=dim, mult=ff_mult, dropout=dropout, approximate="tanh",silu_ff=silu_ff)
 
     def forward(self, x, t, mask=None, rope=None):  # x: noised input, t: time embedding
         # pre-norm & modulation for attention input

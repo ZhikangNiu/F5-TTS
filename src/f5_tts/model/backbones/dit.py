@@ -21,6 +21,7 @@ from f5_tts.model.modules import (
     ConvPositionEmbedding,
     DiTBlock,
     AdaLayerNormZero_Final,
+    AdaRMSNormZero_Final,
     precompute_freqs_cis,
     get_pos_embed_indices,
 )
@@ -145,7 +146,9 @@ class DiT(nn.Module):
         conv_layers=0,
         long_skip_connection=False,
         checkpoint_activations=False,
-        refine_type="conv"
+        refine_type="conv",
+        norm_type="ln",
+        silu_ff=False
     ):
         super().__init__()
 
@@ -159,13 +162,18 @@ class DiT(nn.Module):
 
         self.dim = dim
         self.depth = depth
-
+        self.norm_type = norm_type
+        if self.norm_type == "ln":
+            print("Use Layer Norm")
+            self.norm_out = AdaLayerNormZero_Final(dim)  # final modulation
+        elif self.norm_type == "rmsnorm":
+            print("Use RMSNorm")
+            self.norm_out = AdaRMSNormZero_Final(dim)
         self.transformer_blocks = nn.ModuleList(
-            [DiTBlock(dim=dim, heads=heads, dim_head=dim_head, ff_mult=ff_mult, dropout=dropout) for _ in range(depth)]
+            [DiTBlock(dim=dim, heads=heads, dim_head=dim_head, ff_mult=ff_mult, dropout=dropout,norm_type=self.norm_type,silu_ff=silu_ff) for _ in range(depth)]
         )
         self.long_skip_connection = nn.Linear(dim * 2, dim, bias=False) if long_skip_connection else None
-
-        self.norm_out = AdaLayerNormZero_Final(dim)  # final modulation
+        
         self.proj_out = nn.Linear(dim, mel_dim)
 
         self.checkpoint_activations = checkpoint_activations
