@@ -37,6 +37,8 @@ model:
     conv_layers: 4
     refine_type: "conv"
     checkpoint_activations: False  # recompute activations and save memory for extra compute
+    norm_type: 'ln'
+    silu_ff: False
   mel_spec:
     target_sample_rate: 24000
     n_mel_channels: 100
