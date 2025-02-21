@@ -1,7 +1,16 @@
 hydra:
   run:
     dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
-    
+
+ckpts:
+  logger: wandb  # wandb | tensorboard | None
+  wandb_project: CFM-F5TTS
+  exp_name: F5TTS_Small_train
+  save_per_updates: 50000  # save checkpoint per updates
+  keep_last_n_checkpoints: -1  # -1 to keep all, 0 to not save intermediate, > 0 to keep last N checkpoints
+  last_per_updates: 5000  # save last checkpoint per updates
+  save_dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}
+
 datasets:
   name: Emilia_ZH_EN
   batch_size_per_gpu: 38400  # 8 GPUs, 8 * 38400 = 307200
@@ -28,7 +37,12 @@ model:
     ff_mult: 2
     text_dim: 512
     conv_layers: 4
+    refine_type: 'conv'  # 'conv' | 'conv_bilstm' | 'transformer_encoder'
+    padding_mask: True # whether to use padding mask in text
     checkpoint_activations: False  # recompute activations and save memory for extra compute
+    norm_type: 'ln'  # 'ln' | 'rmsnorm'
+    silu_ff: False
+    zero_init: False
   mel_spec:
     target_sample_rate: 24000
     n_mel_channels: 100
@@ -39,10 +53,3 @@ model:
   vocoder:
     is_local: False  # use local offline ckpt or not
     local_path: None  # local vocoder path
-
-ckpts:
-  logger: wandb  # wandb | tensorboard | None
-  save_per_updates: 50000  # save checkpoint per updates
-  keep_last_n_checkpoints: -1  # -1 to keep all, 0 to not save intermediate, > 0 to keep last N checkpoints
-  last_per_updates: 5000  # save last checkpoint per updates
-  save_dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}

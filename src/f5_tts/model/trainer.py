@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import gc
-import math
 import os
 
 import torch
 import torchaudio
+import logging
 import wandb
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
@@ -21,6 +21,8 @@ from f5_tts.model.utils import default, exists
 
 # trainer
 
+logger = logging.getLogger(__file__)
+logger.setLevel(logging.INFO)
 
 class Trainer:
     def __init__(
@@ -100,11 +102,19 @@ class Trainer:
             self.ema_model = EMA(model, include_online_model=False, **ema_kwargs)
             self.ema_model.to(self.accelerator.device)
 
-            print(f"Using logger: {logger}")
-            if grad_accumulation_steps > 1:
-                print(
-                    "Gradient accumulation checkpointing with per_updates now, old logic per_steps used with before f992c4e"
+            if self.is_main:
+                self.ema_model = EMA(model, include_online_model=False, **ema_kwargs)
+                self.ema_model.to(self.accelerator.device)
+                
+                # Log model info
+                logger.info(
+                f"Using {logger} logger with {self.accelerator.num_processes} GPUs for training\n"
+                f"Model parameters: {sum(p.numel() for p in model.parameters()):,}\n"
+                f"Gradient accumulation steps: {grad_accumulation_steps}\n" 
+                f"Model architecture:\n{model}"
                 )
+                if grad_accumulation_steps > 1:
+                    logger.info("Using per_updates checkpointing. Old per_steps logic used before f992c4e")
 
         self.epochs = epochs
         self.num_warmup_updates = num_warmup_updates
@@ -154,7 +164,7 @@ class Trainer:
                 os.makedirs(self.checkpoint_path)
             if last:
                 self.accelerator.save(checkpoint, f"{self.checkpoint_path}/model_last.pt")
-                print(f"Saved last checkpoint at update {update}")
+                logger.info(f"Saved last checkpoint at update {update}")
             else:
                 if self.keep_last_n_checkpoints == 0:
                     return
@@ -173,7 +183,7 @@ class Trainer:
                     while len(checkpoints) > self.keep_last_n_checkpoints:
                         oldest_checkpoint = checkpoints.pop(0)
                         os.remove(os.path.join(self.checkpoint_path, oldest_checkpoint))
-                        print(f"Removed old checkpoint: {oldest_checkpoint}")
+                        logger.info(f"Removed old checkpoint: {oldest_checkpoint}")
 
     def load_checkpoint(self):
         if (
@@ -388,6 +398,7 @@ class Trainer:
                     self.save_checkpoint(global_update)
 
                     if self.log_samples and self.accelerator.is_local_main_process:
+                        logger.info(f"Update {global_update}, LOSS {loss.item()}, LR {self.scheduler.get_last_lr()[0]}")
                         ref_audio_len = mel_lengths[0]
                         infer_text = [
                             text_inputs[0] + ([" "] if isinstance(text_inputs[0], list) else " ") + text_inputs[0]

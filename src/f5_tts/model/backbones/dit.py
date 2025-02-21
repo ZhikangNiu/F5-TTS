@@ -12,8 +12,11 @@ from __future__ import annotations
 import torch
 from torch import nn
 import torch.nn.functional as F
-
+import logging
 from x_transformers.x_transformers import RotaryEmbedding
+
+logger = logging.getLogger(__file__)
+logger.setLevel(logging.INFO)
 
 from f5_tts.model.modules import (
     TimestepEmbedding,
@@ -21,34 +24,73 @@ from f5_tts.model.modules import (
     ConvPositionEmbedding,
     DiTBlock,
     AdaLayerNormZero_Final,
+    AdaRMSNormZero_Final,
     precompute_freqs_cis,
     get_pos_embed_indices,
 )
 
 
+
+
+class SLSTM(nn.Module):
+    """
+    LSTM without worrying about the hidden state, nor the layout of the data.
+    Expects input as convolutional layout.
+    """
+    def __init__(self, dimension: int, num_layers: int = 2, skip: bool = True):
+        super().__init__()
+        self.skip = skip
+        self.lstm = nn.LSTM(dimension, dimension, num_layers)
+
+    def forward(self, x):
+        y, _ = self.lstm(x)
+        if self.skip:
+            y = y + x
+        return y
+
 # Text embedding
-
-
 class TextEmbedding(nn.Module):
-    def __init__(self, text_num_embeds, text_dim, conv_layers=0, conv_mult=2):
+    def __init__(self, text_num_embeds, text_dim, conv_layers=0, conv_mult=2, refine_type="conv",padding_mask=False):
         super().__init__()
         self.text_embed = nn.Embedding(text_num_embeds + 1, text_dim)  # use 0 as filler token
-
-        if conv_layers > 0:
+        self.refine_type = refine_type
+        self.padding_mask = padding_mask
+        if refine_type == "conv":
+            if conv_layers > 0:
+                self.extra_modeling = True
+                self.precompute_max_pos = 4096  # ~44s of 24khz audio
+                self.register_buffer("freqs_cis", precompute_freqs_cis(text_dim, self.precompute_max_pos), persistent=False)
+                self.text_blocks = nn.Sequential(
+                    *[ConvNeXtV2Block(text_dim, text_dim * conv_mult) for _ in range(conv_layers)]
+                )
+            else:
+                self.extra_modeling = False
+        elif refine_type == "conv_bilstm":
+            if conv_layers > 0:
+                self.extra_modeling = True
+                self.precompute_max_pos = 4096  # ~44s of 24khz audio
+                self.register_buffer("freqs_cis", precompute_freqs_cis(text_dim, self.precompute_max_pos), persistent=False)
+                self.text_blocks = nn.Sequential(
+                    *[ConvNeXtV2Block(text_dim, text_dim * conv_mult) for _ in range(conv_layers)],
+                    SLSTM(dimension=text_dim,num_layers=2,skip=False)
+                )
+            else:
+                self.extra_modeling = False
+        elif refine_type == "transformer_encoder":
             self.extra_modeling = True
             self.precompute_max_pos = 4096  # ~44s of 24khz audio
             self.register_buffer("freqs_cis", precompute_freqs_cis(text_dim, self.precompute_max_pos), persistent=False)
-            self.text_blocks = nn.Sequential(
-                *[ConvNeXtV2Block(text_dim, text_dim * conv_mult) for _ in range(conv_layers)]
-            )
-        else:
-            self.extra_modeling = False
-
+            text_layer = nn.TransformerEncoderLayer(d_model=text_dim,nhead=8,batch_first=True)
+            self.text_blocks = nn.TransformerEncoder(text_layer,num_layers=conv_layers)
+            
     def forward(self, text: int["b nt"], seq_len, drop_text=False):  # noqa: F722
         text = text + 1  # use 0 as filler token. preprocess of batch pad -1, see list_str_to_idx()
         text = text[:, :seq_len]  # curtail if character tokens are more than the mel spec tokens
         batch, text_len = text.shape[0], text.shape[1]
         text = F.pad(text, (0, seq_len - text_len), value=0)
+        # NOTE: add padding mask
+        if self.padding_mask:
+            src_key_padding_mask = (text == 0) 
 
         if drop_text:  # cfg for text
             text = torch.zeros_like(text)
@@ -64,7 +106,15 @@ class TextEmbedding(nn.Module):
             text = text + text_pos_embed
 
             # convnextv2 blocks
-            text = self.text_blocks(text)
+            if self.padding_mask:
+                if self.refine_type in ["conv_bilstm","conv"]:
+                    for layer in self.text_blocks:
+                        text = layer(text)
+                        text = text.masked_fill(src_key_padding_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)),0.0)
+                elif self.refine_type == "transformer_encoder":
+                    text = self.text_blocks(text,src_key_padding_mask=src_key_padding_mask)
+            elif not self.padding_mask:
+                text = self.text_blocks(text)
 
         return text
 
@@ -106,30 +156,71 @@ class DiT(nn.Module):
         conv_layers=0,
         long_skip_connection=False,
         checkpoint_activations=False,
+        refine_type="conv",
+        padding_mask=True,
+        norm_type="ln",
+        silu_ff=False,
+        zero_init=False
     ):
         super().__init__()
 
         self.time_embed = TimestepEmbedding(dim)
         if text_dim is None:
             text_dim = mel_dim
-        self.text_embed = TextEmbedding(text_num_embeds, text_dim, conv_layers=conv_layers)
+        self.text_embed = TextEmbedding(text_num_embeds, text_dim, conv_layers=conv_layers,refine_type=refine_type,padding_mask=padding_mask)
         self.input_embed = InputEmbedding(mel_dim, text_dim, dim)
 
         self.rotary_embed = RotaryEmbedding(dim_head)
 
         self.dim = dim
         self.depth = depth
-
+        self.norm_type = norm_type
+        if self.norm_type == "ln":
+            logger.info("Use Layer Norm in DiT")
+            self.norm_out = AdaLayerNormZero_Final(dim)  # final modulation
+        elif self.norm_type == "rmsnorm":
+            logger.info("Use RMSNorm in DiT")
+            self.norm_out = AdaRMSNormZero_Final(dim)
         self.transformer_blocks = nn.ModuleList(
-            [DiTBlock(dim=dim, heads=heads, dim_head=dim_head, ff_mult=ff_mult, dropout=dropout) for _ in range(depth)]
+            [DiTBlock(dim=dim, heads=heads, dim_head=dim_head, ff_mult=ff_mult, dropout=dropout,norm_type=self.norm_type,silu_ff=silu_ff) for _ in range(depth)]
         )
         self.long_skip_connection = nn.Linear(dim * 2, dim, bias=False) if long_skip_connection else None
-
-        self.norm_out = AdaLayerNormZero_Final(dim)  # final modulation
+        
         self.proj_out = nn.Linear(dim, mel_dim)
 
         self.checkpoint_activations = checkpoint_activations
+        
+        if zero_init:
+            logger.info("Use Adaln-zero init in DiT")
+            self.initialize_weights()
 
+    def initialize_weights(self):
+        # Initialize transformer layers:
+        def _basic_init(module):
+            if isinstance(module, nn.Linear):
+                torch.nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+        self.apply(_basic_init)
+
+        # Initialize timestep embedding MLP:
+        nn.init.normal_(self.time_embed.time_mlp[0].weight, std=0.02)
+        nn.init.normal_(self.time_embed.time_mlp[2].weight, std=0.02)
+        
+        # Initialize input proj embedding MLP
+        # nn.init.
+        # Zero-out adaLN modulation layers in DiT blocks:
+        for block in self.transformer_blocks:
+            nn.init.constant_(block.attn_norm.linear.weight, 0)
+            nn.init.constant_(block.attn_norm.linear.bias, 0)
+
+        # Zero-out output layers:
+        nn.init.constant_(self.norm_out.linear.weight, 0)
+        nn.init.constant_(self.norm_out.linear.bias, 0)
+        nn.init.constant_(self.proj_out.weight, 0)
+        nn.init.constant_(self.proj_out.bias, 0)
+        
+    
     def ckpt_wrapper(self, module):
         # https://github.com/chuanyangjin/fast-DiT/blob/main/models.py
         def ckpt_forward(*inputs):

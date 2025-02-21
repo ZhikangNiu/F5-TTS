@@ -4,10 +4,15 @@ import os
 from importlib.resources import files
 
 import hydra
+import logging
+from omegaconf import OmegaConf
 
 from f5_tts.model import CFM, DiT, Trainer, UNetT
 from f5_tts.model.dataset import load_dataset
 from f5_tts.model.utils import get_tokenizer
+
+logger = logging.getLogger(__file__)
+logger.setLevel(logging.INFO)
 
 os.chdir(str(files("f5_tts").joinpath("../..")))  # change working directory to root of project (local editable)
 
@@ -16,8 +21,8 @@ os.chdir(str(files("f5_tts").joinpath("../..")))  # change working directory to 
 def main(cfg):
     tokenizer = cfg.model.tokenizer
     mel_spec_type = cfg.model.mel_spec.mel_spec_type
-    exp_name = f"{cfg.model.name}_{mel_spec_type}_{cfg.model.tokenizer}_{cfg.datasets.name}"
-
+    logger.info(OmegaConf.to_yaml(cfg))
+    
     # set text tokenizer
     if tokenizer != "custom":
         tokenizer_path = cfg.datasets.name
@@ -53,8 +58,8 @@ def main(cfg):
         grad_accumulation_steps=cfg.optim.grad_accumulation_steps,
         max_grad_norm=cfg.optim.max_grad_norm,
         logger=cfg.ckpts.logger,
-        wandb_project="CFM-TTS",
-        wandb_run_name=exp_name,
+        wandb_project=cfg.ckpts.wandb_project,
+        wandb_run_name=cfg.ckpts.exp_name,
         wandb_resume_id=wandb_resume_id,
         last_per_updates=cfg.ckpts.last_per_updates,
         log_samples=True,
