@@ -195,20 +195,6 @@ class DiT(nn.Module):
             self.initialize_weights()
 
     def initialize_weights(self):
-        # Initialize transformer layers:
-        def _basic_init(module):
-            if isinstance(module, nn.Linear):
-                torch.nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.constant_(module.bias, 0)
-        self.apply(_basic_init)
-
-        # Initialize timestep embedding MLP:
-        nn.init.normal_(self.time_embed.time_mlp[0].weight, std=0.02)
-        nn.init.normal_(self.time_embed.time_mlp[2].weight, std=0.02)
-        
-        # Initialize input proj embedding MLP
-        # nn.init.
         # Zero-out adaLN modulation layers in DiT blocks:
         for block in self.transformer_blocks:
             nn.init.constant_(block.attn_norm.linear.weight, 0)
