@@ -43,6 +43,7 @@ model:
     norm_type: 'ln'  # 'ln' | 'rmsnorm'
     silu_ff: False
     zero_init: False
+    qk_norm: False
   mel_spec:
     target_sample_rate: 24000
     n_mel_channels: 100

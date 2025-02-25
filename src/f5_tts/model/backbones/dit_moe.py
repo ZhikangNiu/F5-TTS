@@ -23,6 +23,7 @@ from f5_tts.model.modules import (
     ConvNeXtV2Block,
     ConvPositionEmbedding,
     DiTBlock,
+    DiTMoEBlock,
     AdaLayerNormZero_Final,
     AdaRMSNormZero_Final,
     precompute_freqs_cis,
@@ -50,11 +51,10 @@ class SLSTM(nn.Module):
 
 # Text embedding
 class TextEmbedding(nn.Module):
-    def __init__(self, text_num_embeds, text_dim, conv_layers=0, conv_mult=2, refine_type="conv",padding_mask=False):
+    def __init__(self, text_num_embeds, text_dim, conv_layers=0, conv_mult=2, refine_type="conv"):
         super().__init__()
         self.text_embed = nn.Embedding(text_num_embeds + 1, text_dim)  # use 0 as filler token
         self.refine_type = refine_type
-        self.padding_mask = padding_mask
         if refine_type == "conv":
             if conv_layers > 0:
                 self.extra_modeling = True
@@ -88,9 +88,7 @@ class TextEmbedding(nn.Module):
         text = text[:, :seq_len]  # curtail if character tokens are more than the mel spec tokens
         batch, text_len = text.shape[0], text.shape[1]
         text = F.pad(text, (0, seq_len - text_len), value=0)
-        # NOTE: add padding mask
-        if self.padding_mask:
-            src_key_padding_mask = (text == 0) 
+        src_key_padding_mask = (text == 0) # shape: [batch_size, seq_len], True 表示需要被 mask 的位置
 
         if drop_text:  # cfg for text
             text = torch.zeros_like(text)
@@ -106,16 +104,12 @@ class TextEmbedding(nn.Module):
             text = text + text_pos_embed
 
             # convnextv2 blocks
-            if self.padding_mask:
-                if self.refine_type in ["conv_bilstm","conv"]:
-                    for layer in self.text_blocks:
-                        text = layer(text)
-                        text = text.masked_fill(src_key_padding_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)),0.0)
-                elif self.refine_type == "transformer_encoder":
-                    text = self.text_blocks(text,src_key_padding_mask=src_key_padding_mask)
-            elif not self.padding_mask:
-                text = self.text_blocks(text)
-
+            if self.refine_type in ["conv_bilstm","conv"]:
+                for layer in self.text_blocks:
+                    text = layer(text)
+                    text = text.masked_fill(src_key_padding_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)),0.0)
+            elif self.refine_type == "transformer_encoder":
+                text = self.text_blocks(text,src_key_padding_mask=src_key_padding_mask)
         return text
 
 
@@ -136,11 +130,7 @@ class InputEmbedding(nn.Module):
         x = self.conv_pos_embed(x) + x
         return x
 
-
-# Transformer backbone using DiT blocks
-
-
-class DiT(nn.Module):
+class DiTMoE(nn.Module):
     def __init__(
         self,
         *,
@@ -157,18 +147,20 @@ class DiT(nn.Module):
         long_skip_connection=False,
         checkpoint_activations=False,
         refine_type="conv",
-        padding_mask=True,
         norm_type="ln",
         silu_ff=False,
         zero_init=False,
         qk_norm=False,
+        num_experts=16,
+        num_experts_per_tok=2,
+        pretraining_tp=2
     ):
         super().__init__()
 
         self.time_embed = TimestepEmbedding(dim)
         if text_dim is None:
             text_dim = mel_dim
-        self.text_embed = TextEmbedding(text_num_embeds, text_dim, conv_layers=conv_layers,refine_type=refine_type,padding_mask=padding_mask)
+        self.text_embed = TextEmbedding(text_num_embeds, text_dim, conv_layers=conv_layers,refine_type=refine_type)
         self.input_embed = InputEmbedding(mel_dim, text_dim, dim)
 
         self.rotary_embed = RotaryEmbedding(dim_head)
@@ -177,16 +169,19 @@ class DiT(nn.Module):
         self.depth = depth
         self.norm_type = norm_type
         if self.norm_type == "ln":
-            logger.info("Use Layer Norm in DiT")
+            logger.info("Use Layer Norm")
             self.norm_out = AdaLayerNormZero_Final(dim)  # final modulation
         elif self.norm_type == "rmsnorm":
-            logger.info("Use RMSNorm in DiT")
+            logger.info("Use RMSNorm")
             self.norm_out = AdaRMSNormZero_Final(dim)
         if qk_norm:
-            logger.info("Use qk layer norm in DiT")
+            logger.info("Attn use qk_norm")
+        
+        #  dim, heads, dim_head, ff_mult=4, dropout=0.1,norm_type="ln",num_experts=16, num_experts_per_tok=2, pretraining_tp=2
         self.transformer_blocks = nn.ModuleList(
-            [DiTBlock(dim=dim, heads=heads, dim_head=dim_head, ff_mult=ff_mult, dropout=dropout,norm_type=self.norm_type,silu_ff=silu_ff,qk_norm=qk_norm) for _ in range(depth)]
+            [DiTMoEBlock(dim=dim, heads=heads, dim_head=dim_head, ff_mult=ff_mult, dropout=dropout,norm_type=self.norm_type,num_experts=num_experts) for _ in range(depth)]
         )
+
         self.long_skip_connection = nn.Linear(dim * 2, dim, bias=False) if long_skip_connection else None
         
         self.proj_out = nn.Linear(dim, mel_dim)
@@ -194,7 +189,7 @@ class DiT(nn.Module):
         self.checkpoint_activations = checkpoint_activations
         
         if zero_init:
-            logger.info("Use Adaln-zero init in DiT")
+            logger.info("Zero Init Model")
             self.initialize_weights()
 
     def initialize_weights(self):
