@@ -107,10 +107,11 @@ class CustomDataset(Dataset):
         self.preprocessed_mel = preprocessed_mel
         self.latent_frames = latent_frames
         if mel_spec_type == "latent":
-            if eval(latent_path) == None:
-                self.latent_path = f"niuzhikang-240108120093/descript-audio-codec/LibriTTS/{self.latent_frames}hz_feat/"
-            else:
-                self.latent_path = str(Path(latent_path).relative_to("/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/"))
+            # if eval(latent_path) == None:
+            #     self.latent_path = f"niuzhikang-240108120093/descript-audio-codec/LibriTTS/{self.latent_frames}hz_feat/"
+            # else:
+                # self.latent_path = str(Path(latent_path).relative_to("/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/"))
+            self.latent_path = str(latent_path)
             # logger.info(f"self.latent_path:{self.latent_path}")
             print(f"self.latent_path:{self.latent_path}")
         
@@ -143,7 +144,7 @@ class CustomDataset(Dataset):
             audio_path = row["audio_path"] # 替换path，然后修改成npy
             
             if self.mel_spec_type == "latent":
-                audio_path = audio_path.replace("public/public_datas/speech/LibriTTS",self.latent_path).replace(".wav",".npy")
+                audio_path = audio_path.replace("/mnt/petrelfs/niuzhikang/data/LibriTTS/",self.latent_path).replace(".wav",".npy")
                 mel_spec = torch.from_numpy(np.load(audio_path)) # 1,dim,t
                 duration = mel_spec.shape[-1]
                 # duration = row["duration"]

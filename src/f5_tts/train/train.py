@@ -52,7 +52,7 @@ def main(cfg):
         grad_accumulation_steps=cfg.optim.grad_accumulation_steps,
         max_grad_norm=cfg.optim.max_grad_norm,
         logger=cfg.ckpts.logger,
-        wandb_project="CFM-TTS",
+        wandb_project="CFM-VAE-TTS",
         wandb_run_name=exp_name,
         wandb_resume_id=wandb_resume_id,
         last_per_steps=cfg.ckpts.last_per_steps,

@@ -270,6 +270,29 @@ class ConvNeXtV2Block(nn.Module):
         x = self.pwconv2(x)
         return residual + x
 
+# RMSNorm
+
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.native_rms_norm = float(torch.__version__[:3]) >= 2.4
+
+    def forward(self, x):
+        if self.native_rms_norm:
+            if self.weight.dtype in [torch.float16, torch.bfloat16]:
+                x = x.to(self.weight.dtype)
+            x = F.rms_norm(x, normalized_shape=(x.shape[-1],), weight=self.weight, eps=self.eps)
+        else:
+            variance = x.to(torch.float32).pow(2).mean(-1, keepdim=True)
+            x = x * torch.rsqrt(variance + self.eps)
+            if self.weight.dtype in [torch.float16, torch.bfloat16]:
+                x = x.to(self.weight.dtype)
+            x = x * self.weight
+
+        return x
 
 # AdaLayerNormZero
 # return with modulated x for attn input, and params for later mlp modulation
@@ -343,7 +366,8 @@ class Attention(nn.Module):
         dim_head: int = 64,
         dropout: float = 0.0,
         context_dim: Optional[int] = None,  # if not None -> joint attention
-        context_pre_only=None,
+        context_pre_only: bool = False,
+        qk_norm: Optional[str] = None,
     ):
         super().__init__()
 
@@ -364,18 +388,32 @@ class Attention(nn.Module):
         self.to_k = nn.Linear(dim, self.inner_dim)
         self.to_v = nn.Linear(dim, self.inner_dim)
 
+        if qk_norm is None:
+            self.q_norm = None
+            self.k_norm = None
+        elif qk_norm == "rms_norm":
+            self.q_norm = RMSNorm(dim_head, eps=1e-6)
+            self.k_norm = RMSNorm(dim_head, eps=1e-6)
+        else:
+            raise ValueError(f"Unimplemented qk_norm: {qk_norm}")
+
         if self.context_dim is not None:
+            self.to_q_c = nn.Linear(context_dim, self.inner_dim)
             self.to_k_c = nn.Linear(context_dim, self.inner_dim)
             self.to_v_c = nn.Linear(context_dim, self.inner_dim)
-            if self.context_pre_only is not None:
-                self.to_q_c = nn.Linear(context_dim, self.inner_dim)
+            if qk_norm is None:
+                self.c_q_norm = None
+                self.c_k_norm = None
+            elif qk_norm == "rms_norm":
+                self.c_q_norm = RMSNorm(dim_head, eps=1e-6)
+                self.c_k_norm = RMSNorm(dim_head, eps=1e-6)
 
         self.to_out = nn.ModuleList([])
         self.to_out.append(nn.Linear(self.inner_dim, dim))
         self.to_out.append(nn.Dropout(dropout))
 
-        if self.context_pre_only is not None and not self.context_pre_only:
-            self.to_out_c = nn.Linear(self.inner_dim, dim)
+        if self.context_dim is not None and not self.context_pre_only:
+            self.to_out_c = nn.Linear(self.inner_dim, context_dim)
 
     def forward(
         self,
@@ -395,8 +433,11 @@ class Attention(nn.Module):
 
 
 class AttnProcessor:
-    def __init__(self):
-        pass
+    def __init__(
+        self,
+        pe_attn_head: int | None = None,  # number of attention head to apply rope, None for all
+    ):
+        self.pe_attn_head = pe_attn_head
 
     def __call__(
         self,
@@ -407,18 +448,10 @@ class AttnProcessor:
     ) -> torch.FloatTensor:
         batch_size = x.shape[0]
 
-        # `sample` projections.
+        # `sample` projections
         query = attn.to_q(x)
         key = attn.to_k(x)
         value = attn.to_v(x)
-
-        # apply rotary position embedding
-        if rope is not None:
-            freqs, xpos_scale = rope
-            q_xpos_scale, k_xpos_scale = (xpos_scale, xpos_scale**-1.0) if xpos_scale is not None else (1.0, 1.0)
-
-            query = apply_rotary_pos_emb(query, freqs, q_xpos_scale)
-            key = apply_rotary_pos_emb(key, freqs, k_xpos_scale)
 
         # attention
         inner_dim = key.shape[-1]
@@ -426,6 +459,25 @@ class AttnProcessor:
         query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
         key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
         value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+
+        # qk norm
+        if attn.q_norm is not None:
+            query = attn.q_norm(query)
+        if attn.k_norm is not None:
+            key = attn.k_norm(key)
+
+        # apply rotary position embedding
+        if rope is not None:
+            freqs, xpos_scale = rope
+            q_xpos_scale, k_xpos_scale = (xpos_scale, xpos_scale**-1.0) if xpos_scale is not None else (1.0, 1.0)
+
+            if self.pe_attn_head is not None:
+                pn = self.pe_attn_head
+                query[:, :pn, :, :] = apply_rotary_pos_emb(query[:, :pn, :, :], freqs, q_xpos_scale)
+                key[:, :pn, :, :] = apply_rotary_pos_emb(key[:, :pn, :, :], freqs, k_xpos_scale)
+            else:
+                query = apply_rotary_pos_emb(query, freqs, q_xpos_scale)
+                key = apply_rotary_pos_emb(key, freqs, k_xpos_scale)
 
         # mask. e.g. inference got a batch with different target durations, mask out the padding
         if mask is not None:

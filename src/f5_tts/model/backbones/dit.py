@@ -30,9 +30,11 @@ from f5_tts.model.modules import (
 
 
 class TextEmbedding(nn.Module):
-    def __init__(self, text_num_embeds, text_dim, conv_layers=0, conv_mult=2):
+    def __init__(self, text_num_embeds, text_dim, mask_padding=True, conv_layers=0, conv_mult=2):
         super().__init__()
         self.text_embed = nn.Embedding(text_num_embeds + 1, text_dim)  # use 0 as filler token
+
+        self.mask_padding = mask_padding  # mask filler and batch padding tokens or not
 
         if conv_layers > 0:
             self.extra_modeling = True
@@ -49,7 +51,8 @@ class TextEmbedding(nn.Module):
         text = text[:, :seq_len]  # curtail if character tokens are more than the mel spec tokens
         batch, text_len = text.shape[0], text.shape[1]
         text = F.pad(text, (0, seq_len - text_len), value=0)
-        src_key_padding_mask = (text == 0)
+        if self.mask_padding:
+            text_mask = text == 0
 
         if drop_text:  # cfg for text
             text = torch.zeros_like(text)
@@ -65,10 +68,13 @@ class TextEmbedding(nn.Module):
             text = text + text_pos_embed
 
             # convnextv2 blocks
-            # text = self.text_blocks(text)
-            for layer in self.text_blocks:
-                text = layer(text)
-                text = text.masked_fill(src_key_padding_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)),0.0)
+            if self.mask_padding:
+                text = text.masked_fill(text_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)), 0.0)
+                for block in self.text_blocks:
+                    text = block(text)
+                    text = text.masked_fill(text_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)), 0.0)
+            else:
+                text = self.text_blocks(text)
 
         return text
 
@@ -107,7 +113,10 @@ class DiT(nn.Module):
         mel_dim=100,
         text_num_embeds=256,
         text_dim=None,
+        text_mask_padding=True,
+        qk_norm=None,
         conv_layers=0,
+        pe_attn_head=None,
         long_skip_connection=False,
         checkpoint_activations=False,
     ):
@@ -116,7 +125,9 @@ class DiT(nn.Module):
         self.time_embed = TimestepEmbedding(dim)
         if text_dim is None:
             text_dim = mel_dim
-        self.text_embed = TextEmbedding(text_num_embeds, text_dim, conv_layers=conv_layers)
+        self.text_embed = TextEmbedding(
+            text_num_embeds, text_dim, mask_padding=text_mask_padding, conv_layers=conv_layers
+        )
         self.input_embed = InputEmbedding(mel_dim, text_dim, dim)
 
         self.rotary_embed = RotaryEmbedding(dim_head)
@@ -125,14 +136,39 @@ class DiT(nn.Module):
         self.depth = depth
 
         self.transformer_blocks = nn.ModuleList(
-            [DiTBlock(dim=dim, heads=heads, dim_head=dim_head, ff_mult=ff_mult, dropout=dropout) for _ in range(depth)]
+            [
+                DiTBlock(
+                    dim=dim,
+                    heads=heads,
+                    dim_head=dim_head,
+                    ff_mult=ff_mult,
+                    dropout=dropout,
+                    qk_norm=qk_norm,
+                    pe_attn_head=pe_attn_head,
+                )
+                for _ in range(depth)
+            ]
         )
         self.long_skip_connection = nn.Linear(dim * 2, dim, bias=False) if long_skip_connection else None
 
-        self.norm_out = AdaLayerNormZero_Final(dim)  # final modulation
+        self.norm_out = AdaLayerNorm_Final(dim)  # final modulation
         self.proj_out = nn.Linear(dim, mel_dim)
 
         self.checkpoint_activations = checkpoint_activations
+
+        self.initialize_weights()
+
+    def initialize_weights(self):
+        # Zero-out AdaLN layers in DiT blocks:
+        for block in self.transformer_blocks:
+            nn.init.constant_(block.attn_norm.linear.weight, 0)
+            nn.init.constant_(block.attn_norm.linear.bias, 0)
+
+        # Zero-out output layers:
+        nn.init.constant_(self.norm_out.linear.weight, 0)
+        nn.init.constant_(self.norm_out.linear.bias, 0)
+        nn.init.constant_(self.proj_out.weight, 0)
+        nn.init.constant_(self.proj_out.bias, 0)
 
     def ckpt_wrapper(self, module):
         # https://github.com/chuanyangjin/fast-DiT/blob/main/models.py

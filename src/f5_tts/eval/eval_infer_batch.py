@@ -29,7 +29,6 @@ device = f"cuda:{accelerator.process_index}"
 # --------------------- Dataset Settings -------------------- #
 
 target_sample_rate = 24000
-n_mel_channels = 100
 hop_length = 256
 win_length = 1024
 n_fft = 1024
@@ -54,8 +53,10 @@ def main():
     parser.add_argument("-nfe", "--nfestep", default=32, type=int)
     parser.add_argument("-o", "--odemethod", default="euler")
     parser.add_argument("-ss", "--swaysampling", default=-1, type=float)
+    parser.add_argument("-ch","--mel_channels",default=128,type=int)
 
     parser.add_argument("-t", "--testset", required=True)
+    parser.add_argument("--latent_path",default=None)
 
     args = parser.parse_args()
 
@@ -67,6 +68,8 @@ def main():
     mel_spec_type = args.mel_spec_type
     latent_frames = args.latent_frames if mel_spec_type == "latent" else 93.75
     tokenizer = args.tokenizer
+    n_mel_channels = args.mel_channels
+    latent_path = args.latent_path
 
     nfe_step = args.nfestep
     ode_method = args.odemethod
@@ -102,7 +105,7 @@ def main():
 
     if testset == "ls_pc_test_clean":
         metalst = rel_path + "/data/librispeech_pc_test_clean_cross_sentence.lst"
-        librispeech_test_clean_path = "/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/public/public_datas/speech/LibriSpeech/test-clean"  # test-clean path
+        librispeech_test_clean_path = "/mnt/petrelfs/niuzhikang/data/LibriSpeech/test-clean/"  # test-clean path
         metainfo = get_librispeech_test_clean_metainfo(metalst, librispeech_test_clean_path)
 
     elif testset == "seedtts_test_zh":
@@ -146,13 +149,14 @@ def main():
             speed=speed,
             tokenizer=tokenizer,
             target_sample_rate=target_sample_rate,
-            n_mel_channels=128,
+            n_mel_channels=n_mel_channels,
             hop_length=int(target_sample_rate//latent_frames), # not sure
             mel_spec_type=mel_spec_type,
             target_rms=target_rms,
             use_truth_duration=use_truth_duration,
             infer_batch_size=infer_batch_size,
-            latent_frames=latent_frames
+            latent_frames=latent_frames,
+            latent_path=latent_path
         )
 
     # Vocoder model
@@ -168,7 +172,8 @@ def main():
     vocab_char_map, vocab_size = get_tokenizer(dataset_name, tokenizer)
 
     # Model
-    n_mel_channels = 128 if mel_spec_type == "latent" else n_mel_channels
+    # n_mel_channels = 128 if mel_spec_type == "latent" else n_mel_channels
+    print(f"mel_channels: {n_mel_channels}")
     model = CFM(
         transformer=model_cls(**model_cfg, text_num_embeds=vocab_size, mel_dim=n_mel_channels),
         mel_spec_kwargs=dict(
