@@ -28,7 +28,10 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:`python3 -c 'import os; import torch; pr
 #     done
 # done
 
-exp_name=/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/niuzhikang-240108120093/F5-TTS/results/F5TTS_Small_vocos_char_LibriTTS_100_360_500_38400_conv_mask_padding_rmsnorm_silu_ff_
+# exp_name=/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/niuzhikang-240108120093/F5-TTS/results/F5TTS_Small_vocos_char_LibriTTS_100_360_500_38400_conv_mask_padding_rmsnorm_silu_ff_
+# exp_name=/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/niuzhikang-240108120093/F5-TTS/results/F5TTS_Small_vocos_char_LibriTTS_100_360_500_38400_conv_mask_padding_fix_rope_
+# exp_name=/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/niuzhikang-240108120093/F5-TTS/results/F5TTS_Small_vocos_char_LibriTTS_100_360_500_38400_conv_mask_padding_ln_silu_ff_
+exp_name=/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/niuzhikang-240108120093/F5-TTS/results/F5TTS_Small_vocos_char_LibriTTS_100_360_500_38400_conv_mask_padding_fix_rope_only_zero_init_adaln_silu_ff_qk_norm_
 librispeech_test_clean_path=/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/public/public_datas/speech/LibriSpeech/test-clean
 infer_setting=seed0_euler_nfe32_vocos_ss-1_cfg2.0_speed1.0
 
@@ -37,7 +40,7 @@ mkdir -p "$log_dir"
 
 
 # for weight in 0.75 1.25 ; do
-for ckpt in 300000; do
+for ckpt in 400000; do
     for task in wer sim;do
         log_file="${log_dir}/${ckpt}_log.txt"
         echo "Task: $task" | tee -a "$log_file"

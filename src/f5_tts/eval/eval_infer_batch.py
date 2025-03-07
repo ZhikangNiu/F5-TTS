@@ -93,10 +93,19 @@ def main():
     if "F5TTS_Small" in exp_name and "rmsnorm" in exp_name and "silu_ff" in exp_name:
         model_cls = DiT
         model_cfg = dict(dim=768, depth=18, heads=12, ff_mult=2, text_dim=512, conv_layers=4,norm_type="rmsnorm",silu_ff=True)
+    if "F5TTS_Small" in exp_name and "ln" in exp_name and "silu_ff" in exp_name:
+        model_cls = DiT
+        model_cfg = dict(dim=768, depth=18, heads=12, ff_mult=2, text_dim=512, conv_layers=4,norm_type="ln",silu_ff=True)
+    if "F5TTS_Small" in exp_name and "silu_ff" in exp_name:
+        model_cls = DiT
+        model_cfg = dict(dim=768, depth=18, heads=12, ff_mult=2, text_dim=512, conv_layers=4,norm_type="ln",silu_ff=True)
     if "F5TTS_Small" in exp_name and "text_encoder_transformer" in exp_name:
         model_cls = DiT
         model_cfg = dict(dim=768, depth=18, heads=12, ff_mult=2, text_dim=512, conv_layers=4,refine_type="transformer_encoder")
-    
+    if "F5TTS_Small" in exp_name and "qk_norm" in exp_name:
+        model_cls = DiT
+        model_cfg = dict(dim=768, depth=18, heads=12, ff_mult=2, text_dim=512, conv_layers=4,norm_type="ln",silu_ff=True,qk_norm=True)
+        print("Load qk norm")
     if "F5TTS_Small" in exp_name and "conv_bilstm" in exp_name:
         model_cls = DiT
         model_cfg = dict(dim=768, depth=18, heads=12, ff_mult=2, text_dim=512, conv_layers=4,refine_type="conv_bilstm")

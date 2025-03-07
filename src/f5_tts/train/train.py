@@ -7,7 +7,7 @@ import hydra
 import logging
 from omegaconf import OmegaConf
 
-from f5_tts.model import CFM, DiT, Trainer, UNetT
+from f5_tts.model import CFM, DiT, Trainer, UNetT, DiTMoE
 from f5_tts.model.dataset import load_dataset
 from f5_tts.model.utils import get_tokenizer
 
@@ -35,6 +35,8 @@ def main(cfg):
         model_cls = DiT
     elif "E2TTS" in cfg.model.name:
         model_cls = UNetT
+    elif "F5TTS" in cfg.model.name and "MoE" in cfg.model.name:
+        model_cls = DiTMoE
     wandb_resume_id = None
 
     model = CFM(

@@ -130,11 +130,7 @@ class InputEmbedding(nn.Module):
         x = self.conv_pos_embed(x) + x
         return x
 
-
-# Transformer backbone using DiT blocks
-
-
-class DiT(nn.Module):
+class DiTMoE(nn.Module):
     def __init__(
         self,
         *,
@@ -155,6 +151,9 @@ class DiT(nn.Module):
         silu_ff=False,
         zero_init=False,
         qk_norm=False,
+        num_experts=16,
+        num_experts_per_tok=2,
+        pretraining_tp=2
     ):
         super().__init__()
 
@@ -177,9 +176,12 @@ class DiT(nn.Module):
             self.norm_out = AdaRMSNormZero_Final(dim)
         if qk_norm:
             logger.info("Attn use qk_norm")
+        
+        #  dim, heads, dim_head, ff_mult=4, dropout=0.1,norm_type="ln",num_experts=16, num_experts_per_tok=2, pretraining_tp=2
         self.transformer_blocks = nn.ModuleList(
-            [DiTBlock(dim=dim, heads=heads, dim_head=dim_head, ff_mult=ff_mult, dropout=dropout,norm_type=self.norm_type,silu_ff=silu_ff,qk_norm=qk_norm) for _ in range(depth)]
+            [DiTMoEBlock(dim=dim, heads=heads, dim_head=dim_head, ff_mult=ff_mult, dropout=dropout,norm_type=self.norm_type,num_experts=num_experts) for _ in range(depth)]
         )
+
         self.long_skip_connection = nn.Linear(dim * 2, dim, bias=False) if long_skip_connection else None
         
         self.proj_out = nn.Linear(dim, mel_dim)

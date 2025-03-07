@@ -21,10 +21,18 @@ import thop
 # FLOPs: 622.1 G, Params: 333.2 M
 # transformer =     UNetT(dim = 1024, depth = 24, heads = 16, ff_mult = 4)
 # FLOPs: 363.4 G, Params: 335.8 M
-transformer = DiT(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4)
+# transformer = DiT(dim=768, depth=18, heads=12, ff_mult=2, text_dim=512, conv_layers=4,silu_ff=False,qk_norm=True)
+# FLOPs: 172.993347072 G
+# Params: 157.921636 M
+transformer = DiT(dim=768, depth=18, heads=12, ff_mult=2, text_dim=512, conv_layers=4,silu_ff=False,qk_norm=False)
+# FLOPs: 172.785987072 G
+# Params: 157.917028 M
+# 157M
+# transformer = DiT(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4,silu_ff=True)
 
 
 model = CFM(transformer=transformer)
+print(model)
 target_sample_rate = 24000
 n_mel_channels = 100
 hop_length = 256

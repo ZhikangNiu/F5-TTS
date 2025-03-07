@@ -357,8 +357,8 @@ class FeedForward(nn.Module):
 
         if silu_ff:
             # 新的 SiLU FeedForward 结构
-            # hidden_dim = int(2 * hidden_dim / 3) if hidden_dim else 0
             hidden_dim = int(dim * mult)
+            hidden_dim = int(2 * hidden_dim / 3)
             self.w1 = nn.Linear(dim, hidden_dim, bias=False)
             self.w2 = nn.Linear(hidden_dim, dim, bias=False)
             self.w3 = nn.Linear(dim, hidden_dim, bias=False)
@@ -396,6 +396,7 @@ class Attention(nn.Module):
         dropout: float = 0.0,
         context_dim: Optional[int] = None,  # if not None -> joint attention
         context_pre_only=None,
+        qk_norm: bool = False,
     ):
         super().__init__()
 
@@ -415,6 +416,11 @@ class Attention(nn.Module):
         self.to_q = nn.Linear(dim, self.inner_dim)
         self.to_k = nn.Linear(dim, self.inner_dim)
         self.to_v = nn.Linear(dim, self.inner_dim)
+        self.qk_norm = qk_norm
+        
+        if self.qk_norm:
+            self.q_norm = nn.LayerNorm(dim_head)
+            self.k_norm = nn.LayerNorm(dim_head)
 
         if self.context_dim is not None:
             self.to_k_c = nn.Linear(context_dim, self.inner_dim)
@@ -458,12 +464,9 @@ class AttnProcessor:
         rope=None,  # rotary position embedding
     ) -> torch.FloatTensor:
         batch_size = x.shape[0]
-
-        # `sample` projections.
         query = attn.to_q(x)
         key = attn.to_k(x)
         value = attn.to_v(x)
-
         # attention
         inner_dim = key.shape[-1]
         head_dim = inner_dim // attn.heads
@@ -471,6 +474,11 @@ class AttnProcessor:
         key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
         value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
         
+        if attn.qk_norm:
+            # `sample` projections.
+            query = attn.q_norm(query)
+            key = attn.k_norm(key)
+            
         # apply rotary position embedding
         if rope is not None:
             freqs, xpos_scale = rope
@@ -553,9 +561,9 @@ class JointAttnProcessor:
 
         inner_dim = key.shape[-1]
         head_dim = inner_dim // attn.heads
-        query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
-        key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
-        value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+        query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2).contiguous()
+        key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2).contiguous()
+        value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2).contiguous()
 
         # mask. e.g. inference got a batch with different target durations, mask out the padding
         if mask is not None:
@@ -594,7 +602,7 @@ class JointAttnProcessor:
 
 
 class DiTBlock(nn.Module):
-    def __init__(self, dim, heads, dim_head, ff_mult=4, dropout=0.1,norm_type="ln",silu_ff=False):
+    def __init__(self, dim, heads, dim_head, ff_mult=4, dropout=0.1,norm_type="ln",silu_ff=False,qk_norm=False):
         super().__init__()
         if norm_type == "ln":        
             self.attn_norm = AdaLayerNormZero(dim)
@@ -609,6 +617,7 @@ class DiTBlock(nn.Module):
             heads=heads,
             dim_head=dim_head,
             dropout=dropout,
+            qk_norm=qk_norm
         )
 
         self.ff = FeedForward(dim=dim, mult=ff_mult, dropout=dropout, approximate="tanh",silu_ff=silu_ff)
@@ -714,3 +723,222 @@ class TimestepEmbedding(nn.Module):
         time_hidden = time_hidden.to(timestep.dtype)
         time = self.time_mlp(time_hidden)  # b d
         return time
+
+class MoEGate(nn.Module):
+    def __init__(self, embed_dim, num_experts=16, num_experts_per_tok=2, aux_loss_alpha=0.01):
+        super().__init__()
+        self.top_k = num_experts_per_tok
+        self.n_routed_experts = num_experts
+
+        self.scoring_func = 'softmax'
+        self.alpha = aux_loss_alpha
+        self.seq_aux = False
+
+        # topk selection algorithm
+        self.norm_topk_prob = False
+        self.gating_dim = embed_dim
+        self.weight = nn.Parameter(torch.empty((self.n_routed_experts, self.gating_dim)))
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        import torch.nn.init  as init
+        init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+    
+    def forward(self, hidden_states):
+        bsz, seq_len, h = hidden_states.shape    
+        # print(bsz, seq_len, h)    
+        ### compute gating score
+        hidden_states = hidden_states.view(-1, h)
+        logits = F.linear(hidden_states, self.weight, None)
+        if self.scoring_func == 'softmax':
+            scores = logits.softmax(dim=-1)
+        else:
+            raise NotImplementedError(f'insupportable scoring function for MoE gating: {self.scoring_func}')
+        
+        ### select top-k experts
+        topk_weight, topk_idx = torch.topk(scores, k=self.top_k, dim=-1, sorted=False)
+        
+        ### norm gate to sum 1
+        if self.top_k > 1 and self.norm_topk_prob:
+            denominator = topk_weight.sum(dim=-1, keepdim=True) + 1e-20
+            topk_weight = topk_weight / denominator
+
+        ### expert-level computation auxiliary loss
+        if self.training and self.alpha > 0.0:
+            scores_for_aux = scores
+            aux_topk = self.top_k
+            # always compute aux loss based on the naive greedy topk method
+            topk_idx_for_aux_loss = topk_idx.view(bsz, -1)
+            if self.seq_aux:
+                scores_for_seq_aux = scores_for_aux.view(bsz, seq_len, -1)
+                ce = torch.zeros(bsz, self.n_routed_experts, device=hidden_states.device)
+                ce.scatter_add_(1, topk_idx_for_aux_loss, torch.ones(bsz, seq_len * aux_topk, device=hidden_states.device)).div_(seq_len * aux_topk / self.n_routed_experts)
+                aux_loss = (ce * scores_for_seq_aux.mean(dim = 1)).sum(dim = 1).mean() * self.alpha
+            else:
+                mask_ce = F.one_hot(topk_idx_for_aux_loss.view(-1), num_classes=self.n_routed_experts)
+                ce = mask_ce.float().mean(0)
+                Pi = scores_for_aux.mean(0)
+                fi = ce * self.n_routed_experts
+                aux_loss = (Pi * fi).sum() * self.alpha
+        else:
+            aux_loss = None
+        return topk_idx, topk_weight, aux_loss
+
+class AddAuxiliaryLoss(torch.autograd.Function):
+    """
+    The trick function of adding auxiliary (aux) loss, 
+    which includes the gradient of the aux loss during backpropagation.
+    """
+    @staticmethod
+    def forward(ctx, x, loss):
+        assert loss.numel() == 1
+        ctx.dtype = loss.dtype
+        ctx.required_aux_loss = loss.requires_grad
+        return x
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        grad_loss = None
+        if ctx.required_aux_loss:
+            grad_loss = torch.ones(1, dtype=ctx.dtype, device=grad_output.device)
+        return grad_output, grad_loss
+
+class MoeMLP(nn.Module):
+    def __init__(self, hidden_size, intermediate_size, pretraining_tp=2):
+        super().__init__()
+
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        self.act_fn = nn.SiLU()
+        self.pretraining_tp = pretraining_tp
+
+    def forward(self, x):
+        if self.pretraining_tp > 1:
+            slice = self.intermediate_size // self.pretraining_tp
+            gate_proj_slices = self.gate_proj.weight.split(slice, dim=0)
+            up_proj_slices = self.up_proj.weight.split(slice, dim=0) 
+            # print(self.up_proj.weight.size(), self.down_proj.weight.size())
+            down_proj_slices = self.down_proj.weight.split(slice, dim=1)
+
+            gate_proj = torch.cat(
+                [F.linear(x, gate_proj_slices[i]) for i in range(self.pretraining_tp)], dim=-1
+            )
+            up_proj = torch.cat([F.linear(x, up_proj_slices[i]) for i in range(self.pretraining_tp)], dim=-1)
+
+            intermediate_states = (self.act_fn(gate_proj) * up_proj).split(slice, dim=-1)
+            down_proj = [
+                F.linear(intermediate_states[i], down_proj_slices[i]) for i in range(self.pretraining_tp)
+            ]
+            down_proj = sum(down_proj)
+        else:
+            down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+
+        return down_proj
+
+class SparseMoeBlock(nn.Module):
+    """
+    A mixed expert module containing shared experts.
+    """
+    def __init__(self, embed_dim, ff_mult=4, num_experts=16, num_experts_per_tok=2, pretraining_tp=2):
+        super().__init__()
+        self.num_experts_per_tok = num_experts_per_tok
+        self.experts = nn.ModuleList([MoeMLP(hidden_size = embed_dim, intermediate_size = ff_mult * embed_dim, pretraining_tp=pretraining_tp) for _ in range(num_experts)])
+        self.gate = MoEGate(embed_dim=embed_dim, num_experts=num_experts, num_experts_per_tok=num_experts_per_tok)
+        self.n_shared_experts = 2
+        
+        if self.n_shared_experts is not None:
+            intermediate_size =  embed_dim * self.n_shared_experts
+            self.shared_experts = MoeMLP(hidden_size = embed_dim, intermediate_size = intermediate_size, pretraining_tp=pretraining_tp)
+    
+    def forward(self, hidden_states):
+        identity = hidden_states
+        orig_shape = hidden_states.shape
+        topk_idx, topk_weight, aux_loss = self.gate(hidden_states) 
+        # print(topk_idx.tolist(), print(len(topk_idx.tolist()))) 
+        # global selected_ids_list
+        # selected_ids_list.append(topk_idx.tolist())
+
+        hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
+        flat_topk_idx = topk_idx.view(-1)
+        if self.training:
+            hidden_states = hidden_states.repeat_interleave(self.num_experts_per_tok, dim=0)
+            y = torch.empty_like(hidden_states, dtype=hidden_states.dtype)
+            # NOTE: 目测效率太低
+            # expert_mask = F.one_hot(flat_topk_idx, num_classes=len(self.experts)).float()
+            # expert_outputs = torch.stack([expert(hidden_states) for expert in self.experts], dim=1)
+            # y = (expert_outputs * expert_mask.unsqueeze(-1)).sum(dim=1)
+            # y = y * topk_weight.view(-1, 1)
+            # y = y.view(*orig_shape)
+            for i, expert in enumerate(self.experts): 
+                y[flat_topk_idx == i] = expert(hidden_states[flat_topk_idx == i]).float()
+            y = (y.view(*topk_weight.shape, -1) * topk_weight.unsqueeze(-1)).sum(dim=1)
+            y =  y.view(*orig_shape)
+            y = AddAuxiliaryLoss.apply(y, aux_loss)
+        else:
+            y = self.moe_infer(hidden_states, flat_topk_idx, topk_weight.view(-1, 1)).view(*orig_shape)
+        if self.n_shared_experts is not None:
+            y = y + self.shared_experts(identity)
+        return y
+    
+
+    @torch.no_grad()
+    def moe_infer(self, x, flat_expert_indices, flat_expert_weights):
+        expert_cache = torch.zeros_like(x) 
+        idxs = flat_expert_indices.argsort()
+        tokens_per_expert = flat_expert_indices.bincount().cpu().numpy().cumsum(0)
+        token_idxs = idxs // self.num_experts_per_tok 
+        for i, end_idx in enumerate(tokens_per_expert):
+            start_idx = 0 if i == 0 else tokens_per_expert[i-1]
+            if start_idx == end_idx:
+                continue
+            expert = self.experts[i]
+            exp_token_idx = token_idxs[start_idx:end_idx]
+            expert_tokens = x[exp_token_idx]
+            expert_out = expert(expert_tokens)
+            expert_out.mul_(flat_expert_weights[idxs[start_idx:end_idx]]) 
+            
+            # for fp16 and other dtype
+            expert_cache = expert_cache.to(expert_out.dtype)
+            expert_cache.scatter_reduce_(0, exp_token_idx.view(-1, 1).repeat(1, x.shape[-1]), expert_out, reduce='sum')
+        return expert_cache
+    
+# DiTMoE Block
+
+
+class DiTMoEBlock(nn.Module):
+    def __init__(self, dim, heads, dim_head, ff_mult=4, dropout=0.1,norm_type="ln",num_experts=16, num_experts_per_tok=2, pretraining_tp=2):
+        super().__init__()
+        if norm_type == "ln":        
+            self.attn_norm = AdaLayerNormZero(dim)
+            self.ff_norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
+        elif norm_type == "rmsnorm":
+            self.attn_norm = AdaRMSNormZero(dim)
+            self.ff_norm = RMSNorm(dim)
+            
+        self.attn = Attention(
+            processor=AttnProcessor(),
+            dim=dim,
+            heads=heads,
+            dim_head=dim_head,
+            dropout=dropout,
+        )
+
+        self.moe = SparseMoeBlock(embed_dim=dim, ff_mult=ff_mult, num_experts=num_experts, num_experts_per_tok=num_experts_per_tok, pretraining_tp=pretraining_tp)
+
+    def forward(self, x, t, mask=None, rope=None):  # x: noised input, t: time embedding
+        # pre-norm & modulation for attention input
+        norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(x, emb=t)
+
+        # attention
+        attn_output = self.attn(x=norm, mask=mask, rope=rope)
+
+        # process attention output for input x
+        x = x + gate_msa.unsqueeze(1) * attn_output
+
+        norm = self.ff_norm(x) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
+        x = x + gate_mlp.unsqueeze(1) * self.moe(norm)
+
+        return x
