@@ -155,13 +155,13 @@ class SinusPositionEmbedding(nn.Module):
 
     def forward(self, x, scale=1000):
         device = x.device
-        half_dim = self.dim // 2
+        half_dim = self.dim // 2 # x.shape [204]
         emb = math.log(10000) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, device=device).float() * -emb)
-        emb = scale * x.unsqueeze(1) * emb.unsqueeze(0)
+        emb = torch.exp(torch.arange(half_dim, device=device,dtype=torch.float) * -emb)
+        # emb = scale * x.unsqueeze(1) * emb.unsqueeze(0)
+        emb = x.unsqueeze(1) * emb.unsqueeze(0)
         emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
         return emb
-
 
 # convolutional position embedding
 
@@ -296,9 +296,7 @@ class RMSNorm(nn.Module):
 
 # AdaLayerNormZero
 # return with modulated x for attn input, and params for later mlp modulation
-
-
-class AdaLayerNormZero(nn.Module):
+class AdaLayerNorm(nn.Module):
     def __init__(self, dim):
         super().__init__()
 
@@ -313,13 +311,10 @@ class AdaLayerNormZero(nn.Module):
 
         x = self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
         return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
-
-
 # AdaLayerNormZero for final layer
 # return only with modulated x for attn input, cuz no more mlp modulation
 
-
-class AdaLayerNormZero_Final(nn.Module):
+class AdaLayerNorm_Final(nn.Module):
     def __init__(self, dim):
         super().__init__()
 
@@ -334,7 +329,6 @@ class AdaLayerNormZero_Final(nn.Module):
 
         x = self.norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
         return x
-
 
 # FeedForward
 
@@ -594,16 +588,17 @@ class JointAttnProcessor:
 
 
 class DiTBlock(nn.Module):
-    def __init__(self, dim, heads, dim_head, ff_mult=4, dropout=0.1):
+    def __init__(self, dim, heads, dim_head, ff_mult=4, dropout=0.1, qk_norm=None, pe_attn_head=None):
         super().__init__()
 
-        self.attn_norm = AdaLayerNormZero(dim)
+        self.attn_norm = AdaLayerNorm(dim)
         self.attn = Attention(
-            processor=AttnProcessor(),
+            processor=AttnProcessor(pe_attn_head=pe_attn_head),
             dim=dim,
             heads=heads,
             dim_head=dim_head,
             dropout=dropout,
+            qk_norm=qk_norm,
         )
 
         self.ff_norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)

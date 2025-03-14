@@ -17,6 +17,7 @@ from tqdm import tqdm
 from f5_tts.model import CFM
 from f5_tts.model.dataset import DynamicBatchSampler, collate_fn
 from f5_tts.model.utils import default, exists
+from f5_tts.model.nan_detector import NanDetector
 
 # trainer
 
@@ -273,6 +274,7 @@ class Trainer:
         else:
             skipped_epoch = 0
 
+        detector = NanDetector(self.model, forward=True, backward=True)
         for epoch in range(skipped_epoch, self.epochs):
             self.model.train()
             if exists(resumable_with_seed) and epoch == skipped_epoch:
@@ -294,19 +296,20 @@ class Trainer:
 
             for batch in progress_bar:
                 with self.accelerator.accumulate(self.model):
-                    text_inputs = batch["text"]
-                    mel_spec = batch["mel"].permute(0, 2, 1)
-                    mel_lengths = batch["mel_lengths"]
+                    with detector:
+                        text_inputs = batch["text"]
+                        mel_spec = batch["mel"].permute(0, 2, 1)
+                        mel_lengths = batch["mel_lengths"]
 
-                    # TODO. add duration predictor training
-                    if self.duration_predictor is not None and self.accelerator.is_local_main_process:
-                        dur_loss = self.duration_predictor(mel_spec, lens=batch.get("durations"))
-                        self.accelerator.log({"duration loss": dur_loss.item()}, step=global_step)
+                        # TODO. add duration predictor training
+                        if self.duration_predictor is not None and self.accelerator.is_local_main_process:
+                            dur_loss = self.duration_predictor(mel_spec, lens=batch.get("durations"))
+                            self.accelerator.log({"duration loss": dur_loss.item()}, step=global_step)
 
-                    loss, cond, pred = self.model(
-                        mel_spec, text=text_inputs, lens=mel_lengths, noise_scheduler=self.noise_scheduler
-                    )
-                    self.accelerator.backward(loss)
+                        loss, cond, pred = self.model(
+                            mel_spec, text=text_inputs, lens=mel_lengths, noise_scheduler=self.noise_scheduler
+                        )
+                        self.accelerator.backward(loss)
 
                     if self.max_grad_norm > 0 and self.accelerator.sync_gradients:
                         self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)

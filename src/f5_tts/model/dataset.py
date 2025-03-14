@@ -144,7 +144,7 @@ class CustomDataset(Dataset):
             audio_path = row["audio_path"] # 替换path，然后修改成npy
             
             if self.mel_spec_type == "latent":
-                audio_path = audio_path.replace("/mnt/petrelfs/niuzhikang/data/LibriTTS/",self.latent_path).replace(".wav",".npy")
+                audio_path = audio_path.replace("/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/public/public_datas/speech/LibriTTS",self.latent_path).replace(".wav",".npy")
                 mel_spec = torch.from_numpy(np.load(audio_path)) # 1,dim,t
                 duration = mel_spec.shape[-1]
                 # duration = row["duration"]

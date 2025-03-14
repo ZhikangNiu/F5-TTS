@@ -20,7 +20,7 @@ from f5_tts.model.modules import (
     ConvNeXtV2Block,
     ConvPositionEmbedding,
     DiTBlock,
-    AdaLayerNormZero_Final,
+    AdaLayerNorm_Final,
     precompute_freqs_cis,
     get_pos_embed_indices,
 )

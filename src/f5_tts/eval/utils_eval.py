@@ -246,7 +246,7 @@ def get_latent_inference_prompt(
             ref_audio = resampler(ref_audio)
         assert os.path.exists(latent_path), f"latent_path {latent_path} not found."
         # /mnt/petrelfs/niuzhikang/descript-audio-codec/LibriSpeech/24khz_800x_8544_kl5e-5_vae32_clamp_logvar/30hz_feat/test-clean
-        ref_latent_path = prompt_wav.replace("/mnt/petrelfs/niuzhikang/data/LibriSpeech/test-clean",latent_path).replace(".flac",".npy")
+        ref_latent_path = prompt_wav.replace("/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/public/public_datas/speech/LibriSpeech/test-clean",latent_path).replace(".flac",".npy")
         print("load latent from: ", ref_latent_path)
         # ref_latent_path = prompt_wav.replace("public/public_datas/speech/LibriSpeech/test-clean/",f"niuzhikang-240108120093/descript-audio-codec/LibriSpeech/test-clean/{latent_frames}hz_feat/").replace(".flac",".npy")
         ref_mel = torch.from_numpy(np.load(ref_latent_path))

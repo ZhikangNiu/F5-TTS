@@ -102,10 +102,12 @@ def main():
     if exp_name == "F5TTS_Small_vocos_char_LibriTTS_100_360_500_latent_30hz_bzs102400_msk0.4-0.7_convlayer0":
         model_cls = DiT
         model_cfg = dict(dim=768, depth=18, heads=12, ff_mult=2, text_dim=512, conv_layers=0)
-
+    if exp_name == "F5TTS_v1_Small_vocos_char_LibriTTS_100_360_500_latent_40hz_bzs102400_msk0.4-0.7_convlayer4_lr3e-4_kl1e-3_vae64_rope":
+        model_cls = DiT
+        model_cfg = dict(dim=768, depth=18, heads=12, ff_mult=2, text_dim=512, conv_layers=4,pe_attn_head=None,qk_norm="rms_norm")
     if testset == "ls_pc_test_clean":
         metalst = rel_path + "/data/librispeech_pc_test_clean_cross_sentence.lst"
-        librispeech_test_clean_path = "/mnt/petrelfs/niuzhikang/data/LibriSpeech/test-clean/"  # test-clean path
+        librispeech_test_clean_path = "/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/public/public_datas/speech/LibriSpeech/test-clean/"  # test-clean path
         metainfo = get_librispeech_test_clean_metainfo(metalst, librispeech_test_clean_path)
 
     elif testset == "seedtts_test_zh":

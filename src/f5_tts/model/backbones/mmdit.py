@@ -18,7 +18,7 @@ from f5_tts.model.modules import (
     TimestepEmbedding,
     ConvPositionEmbedding,
     MMDiTBlock,
-    AdaLayerNormZero_Final,
+    AdaLayerNorm_Final,
     precompute_freqs_cis,
     get_pos_embed_indices,
 )

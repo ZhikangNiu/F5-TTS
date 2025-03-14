@@ -127,6 +127,7 @@ def get_tokenizer(dataset_name, tokenizer: str = "pinyin"):
             for i, char in enumerate(f):
                 vocab_char_map[char[:-1]] = i
         vocab_size = len(vocab_char_map)
+    
 
     return vocab_char_map, vocab_size
 

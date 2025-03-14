@@ -7,7 +7,7 @@ datasets:
   batch_size_per_gpu: 38400  # 8 GPUs, 8 * 38400 = 307200
   batch_size_type: frame  # "frame" or "sample"
   max_samples: 64  # max sequences per batch if use frame-wise batch_size. we set 32 for small models, 64 for base models
-  num_workers: 16
+  num_workers: 32
 
 optim:
   epochs: 15
@@ -30,7 +30,8 @@ model:
     ff_mult: 2
     text_dim: 512
     conv_layers: 4
-    text_mask_padding: False
+    text_mask_padding: True
+    qk_norm: null
     pe_attn_head: 1
     checkpoint_activations: False  # recompute activations and save memory for extra compute
   mel_spec:
