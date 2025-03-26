@@ -98,7 +98,7 @@ def get_vocos_mel_spectrogram(
 
     mel = mel_stft(waveform)
     mel = mel.clamp(min=1e-5).log()
-    return mel
+    return mel  # torch.Size([1, 100, 156])
 
 
 class MelSpec(nn.Module):
@@ -112,33 +112,35 @@ class MelSpec(nn.Module):
         mel_spec_type="vocos",
     ):
         super().__init__()
-        assert mel_spec_type in ["vocos", "bigvgan"], print("We only support two extract mel backend: vocos or bigvgan")
+        # assert mel_spec_type in ["vocos", "bigvgan",'vae' ], print("We only support two extract mel backend: vocos or bigvgan")
 
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.win_length = win_length
         self.n_mel_channels = n_mel_channels
         self.target_sample_rate = target_sample_rate
+        self.mel_spec_type = mel_spec_type
 
         if mel_spec_type == "vocos":
             self.extractor = get_vocos_mel_spectrogram
         elif mel_spec_type == "bigvgan":
             self.extractor = get_bigvgan_mel_spectrogram
-
         self.register_buffer("dummy", torch.tensor(0), persistent=False)
 
     def forward(self, wav):
         if self.dummy.device != wav.device:
             self.to(wav.device)
-
-        mel = self.extractor(
-            waveform=wav,
-            n_fft=self.n_fft,
-            n_mel_channels=self.n_mel_channels,
-            target_sample_rate=self.target_sample_rate,
-            hop_length=self.hop_length,
-            win_length=self.win_length,
-        )
+        if self.mel_spec_type in ["vocos", "bigvgan"]:
+            mel = self.extractor(
+                waveform=wav,
+                n_fft=self.n_fft,
+                n_mel_channels=self.n_mel_channels,
+                target_sample_rate=self.target_sample_rate,
+                hop_length=self.hop_length,
+                win_length=self.win_length,
+            )
+        elif self.extractor is None:
+            mel = wav.unsqueeze(0)  # 1, 1 , length
 
         return mel
 

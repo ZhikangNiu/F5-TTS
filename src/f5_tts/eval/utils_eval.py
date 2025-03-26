@@ -54,6 +54,27 @@ def get_librispeech_test_clean_metainfo(metalst, librispeech_test_clean_path):
     return metainfo
 
 
+def get_librispeech_long_form_test_clean_metainfo(metalst, librispeech_test_clean_path):
+    f = open(metalst)
+    lines = f.readlines()
+    f.close()
+    metainfo = []
+    for line in lines:
+        ref_utt, ref_dur, ref_txt, gen_utt, gen_dur, gen_txt = line.strip().split("\t")
+
+        ref_txt = ref_txt[0] + ref_txt[1:].lower() + "."  # if use librispeech test-clean (no-pc)
+        ref_spk_id, ref_chaptr_id, _ = ref_utt.split("-")
+        ref_wav = os.path.join(librispeech_test_clean_path, ref_spk_id, ref_chaptr_id, ref_utt + ".flac")
+
+        gen_txt = gen_txt[0] + gen_txt[1:].lower() + "."  # if use librispeech test-clean (no-pc)
+        gen_spk_id, gen_chaptr_id, _ = gen_utt.split("-")
+        gen_wav = os.path.join(librispeech_test_clean_path, gen_spk_id, gen_chaptr_id, gen_utt + ".flac")
+
+        metainfo.append((gen_utt, ref_txt, ref_wav, " " + gen_txt, gen_wav))
+
+    return metainfo
+
+
 # padded to max length mel batch
 def padded_mel_batch(ref_mels):
     max_mel_length = torch.LongTensor([mel.shape[-1] for mel in ref_mels]).amax()

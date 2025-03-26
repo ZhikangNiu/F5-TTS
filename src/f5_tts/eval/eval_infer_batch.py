@@ -16,6 +16,7 @@ from tqdm import tqdm
 from f5_tts.eval.utils_eval import (
     get_inference_prompt,
     get_librispeech_test_clean_metainfo,
+    get_librispeech_long_form_test_clean_metainfo,
     get_seedtts_testset_metainfo,
 )
 from f5_tts.infer.utils_infer import load_checkpoint, load_vocoder
@@ -80,8 +81,13 @@ def main():
 
     if testset == "ls_pc_test_clean":
         metalst = rel_path + "/data/librispeech_pc_test_clean_cross_sentence.lst"
-        librispeech_test_clean_path = "<SOME_PATH>/LibriSpeech/test-clean"  # test-clean path
+        librispeech_test_clean_path = "/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/public/public_datas/speech/LibriSpeech/test-clean/"  # test-clean path
         metainfo = get_librispeech_test_clean_metainfo(metalst, librispeech_test_clean_path)
+
+    elif testset == "long_form_ls":
+        metalst = rel_path + "/data/long_form_ls_test_clean.lst"
+        librispeech_test_clean_path = "/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/public/public_datas/speech/LibriSpeech/test-clean/"  # test-clean path
+        metainfo = get_librispeech_long_form_test_clean_metainfo(metalst, librispeech_test_clean_path)
 
     elif testset == "seedtts_test_zh":
         metalst = rel_path + "/data/seedtts_testset/zh/meta.lst"
@@ -115,12 +121,13 @@ def main():
         target_rms=target_rms,
         use_truth_duration=use_truth_duration,
         infer_batch_size=infer_batch_size,
+        max_secs=60,
     )
 
     # Vocoder model
-    local = False
+    local = True
     if mel_spec_type == "vocos":
-        vocoder_local_path = "../checkpoints/charactr/vocos-mel-24khz"
+        vocoder_local_path = "/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/niuzhikang-240108120093/dev_f5_be53fb1/checkpoints/vocos-mel-24khz"
     elif mel_spec_type == "bigvgan":
         vocoder_local_path = "../checkpoints/bigvgan_v2_24khz_100band_256x"
     vocoder = load_vocoder(vocoder_name=mel_spec_type, is_local=local, local_path=vocoder_local_path)
@@ -144,8 +151,8 @@ def main():
         ),
         vocab_char_map=vocab_char_map,
     ).to(device)
-
-    ckpt_path = rel_path + f"/ckpts/{exp_name}/model_{ckpt_step}.pt"
+    # import pdb;pdb.set_trace()
+    ckpt_path = rel_path + f"/ckpts/{exp_name}/model_{ckpt_step}.safetensors"
     if not os.path.exists(ckpt_path):
         print("Loading from self-organized training checkpoints rather than released pretrained.")
         ckpt_path = rel_path + f"/{model_cfg.ckpts.save_dir}/model_{ckpt_step}.pt"

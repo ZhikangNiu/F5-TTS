@@ -49,6 +49,7 @@ class Trainer:
         ema_kwargs: dict = dict(),
         bnb_optimizer: bool = False,
         mel_spec_type: str = "vocos",  # "vocos" | "bigvgan"
+        vae_ckpt_path: str = None,
         is_local_vocoder: bool = False,  # use local path vocoder
         local_vocoder_path: str = "",  # local vocoder path
         cfg_dict: dict = dict(),  # training config
@@ -130,6 +131,7 @@ class Trainer:
         self.noise_scheduler = noise_scheduler
 
         self.duration_predictor = duration_predictor
+        self.vae_ckpt_path = vae_ckpt_path
 
         if bnb_optimizer:
             import bitsandbytes as bnb
@@ -335,6 +337,11 @@ class Trainer:
         else:
             skipped_epoch = 0
 
+        if self.vocoder_name == "vae":
+            from f5_tts.model.autoencoder import AutoencoderKL
+
+            vae_encoder = AutoencoderKL.load_encoder_from_pretrain(self.vae_ckpt_path)
+
         for epoch in range(skipped_epoch, self.epochs):
             self.model.train()
             if exists(resumable_with_seed) and epoch == skipped_epoch:
@@ -359,8 +366,13 @@ class Trainer:
             for batch in current_dataloader:
                 with self.accelerator.accumulate(self.model):
                     text_inputs = batch["text"]
-                    mel_spec = batch["mel"].permute(0, 2, 1)
-                    mel_lengths = batch["mel_lengths"]
+                    if self.vocoder_name in ["vocos", "bigvgan"]:
+                        mel_spec = batch["mel"].permute(0, 2, 1)  # 64, 156 , 100
+                        mel_lengths = batch["mel_lengths"]
+                    elif self.vocoder_name in ["raw", "vae"]:
+                        with torch.no_grad():
+                            mel_spec = vae_encoder.extract_latent(batch["mel"].unsqueeze(1))  # 64, 66, 64
+                            mel_lengths = torch.LongTensor([spec.shape[0] for spec in mel_spec]).to(mel_spec.device)
 
                     # TODO. add duration predictor training
                     if self.duration_predictor is not None and self.accelerator.is_local_main_process:
@@ -428,7 +440,7 @@ class Trainer:
                         torchaudio.save(
                             f"{log_samples_path}/update_{global_update}_ref.wav", ref_audio, target_sample_rate
                         )
-
+                        self.model.train()
                 if global_update % self.last_per_updates == 0 and self.accelerator.sync_gradients:
                     self.save_checkpoint(global_update, last=True)
 

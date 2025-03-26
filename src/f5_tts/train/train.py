@@ -37,6 +37,9 @@ def main(cfg):
         vocab_char_map=vocab_char_map,
     )
 
+    vae_ckpt_path = None
+    if mel_spec_type == "vae":
+        vae_ckpt_path = cfg.model.vae_ckpt_path
     # init trainer
     trainer = Trainer(
         model,
@@ -62,6 +65,7 @@ def main(cfg):
         is_local_vocoder=cfg.model.vocoder.is_local,
         local_vocoder_path=cfg.model.vocoder.local_path,
         cfg_dict=OmegaConf.to_container(cfg, resolve=True),
+        vae_ckpt_path=vae_ckpt_path,
     )
 
     train_dataset = load_dataset(cfg.datasets.name, tokenizer, mel_spec_kwargs=cfg.model.mel_spec)

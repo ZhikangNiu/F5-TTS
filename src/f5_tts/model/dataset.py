@@ -137,10 +137,30 @@ class CustomDataset(Dataset):
                 break  # valid
 
             index = (index + 1) % len(self.data)
+        if self.mel_spec_type in ["vocos", "bigvgan"]:
+            if self.preprocessed_mel:
+                mel_spec = torch.tensor(row["mel_spec"])
+            else:
+                audio, source_sample_rate = torchaudio.load(audio_path)
 
-        if self.preprocessed_mel:
-            mel_spec = torch.tensor(row["mel_spec"])
-        else:
+                # make sure mono input
+                if audio.shape[0] > 1:
+                    audio = torch.mean(audio, dim=0, keepdim=True)
+
+                # resample if necessary
+                if source_sample_rate != self.target_sample_rate:
+                    resampler = torchaudio.transforms.Resample(source_sample_rate, self.target_sample_rate)
+                    audio = resampler(audio)
+
+                # to mel spectrogram
+                mel_spec = self.mel_spectrogram(audio)
+                mel_spec = mel_spec.squeeze(0)  # '1 d t -> d t'
+
+            return {
+                "mel_spec": mel_spec,
+                "text": text,
+            }
+        elif self.mel_spec_type in ["raw", "vae"]:
             audio, source_sample_rate = torchaudio.load(audio_path)
 
             # make sure mono input
@@ -151,15 +171,7 @@ class CustomDataset(Dataset):
             if source_sample_rate != self.target_sample_rate:
                 resampler = torchaudio.transforms.Resample(source_sample_rate, self.target_sample_rate)
                 audio = resampler(audio)
-
-            # to mel spectrogram
-            mel_spec = self.mel_spectrogram(audio)
-            mel_spec = mel_spec.squeeze(0)  # '1 d t -> d t'
-
-        return {
-            "mel_spec": mel_spec,
-            "text": text,
-        }
+            return {"mel_spec": audio, "text": text}
 
 
 # Dynamic Batch Sampler

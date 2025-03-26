@@ -16,3 +16,4 @@ python src/f5_tts/eval/eval_seedtts_testset.py -e sim -l zh --gen_wav_dir result
 python src/f5_tts/eval/eval_utmos.py --audio_dir results/F5TTS_v1_Base_1250000/seedtts_test_zh/seed0_euler_nfe32_vocos_ss-1_cfg2.0_speed1.0
 
 # etc.
+accelerate launch src/f5_tts/eval/eval_infer_batch.py -s 0 -n "F5TTS_v1_Base" -t "long_form_ls" -nfe 32 -c 1200000 
