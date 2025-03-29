@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "f5-tts"
-version = "1.0.8"
+version = "1.0.9"
 description = "F5-TTS: A Fairytaler that Fakes Fluent and Faithful Speech with Flow Matching"
 readme = "README.md"
 license = {text = "MIT License"}
@@ -26,6 +26,7 @@ dependencies = [
     "librosa",
     "matplotlib",
     "numpy<=1.26.4",
+    "pydantic<=2.10.6",
     "pydub",
     "pypinyin",
     "safetensors",
