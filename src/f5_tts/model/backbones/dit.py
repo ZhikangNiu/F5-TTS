@@ -82,18 +82,38 @@ class TextEmbedding(nn.Module):
 
 
 class InputEmbedding(nn.Module):
-    def __init__(self, mel_dim, text_dim, out_dim):
+    def __init__(self, mel_dim, text_dim, out_dim,concat_dim="channel"):
         super().__init__()
-        self.proj = nn.Linear(mel_dim * 2 + text_dim, out_dim)
-        self.conv_pos_embed = ConvPositionEmbedding(dim=out_dim)
+        if concat_dim == "channel":
+            self.proj = nn.Linear(mel_dim * 2 + text_dim, out_dim)
+            self.conv_pos_embed = ConvPositionEmbedding(dim=out_dim)
+        elif concat_dim == "time":
+            self.cond_proj = nn.Linear(mel_dim * 2, out_dim) # noisy_input + cond_input
+            self.text_proj = nn.Linear(text_dim, out_dim)
+            self.cond_pos_embed = ConvPositionEmbedding(dim=out_dim)
+            self.text_pos_embed = ConvPositionEmbedding(dim=out_dim)
+        else:
+            raise ValueError(f"Invalid concat_dim: {concat_dim}")
+        self.concat_dim = concat_dim
 
     def forward(self, x: float["b n d"], cond: float["b n d"], text_embed: float["b n d"], drop_audio_cond=False):  # noqa: F722
+        batch, mel_len = x.shape[:2]
         if drop_audio_cond:  # cfg for cond audio
             cond = torch.zeros_like(cond)
 
-        x = self.proj(torch.cat((x, cond, text_embed), dim=-1))
-        x = self.conv_pos_embed(x) + x
-        return x
+        if self.concat_dim == "channel":
+            x = self.proj(torch.cat((x, cond, text_embed), dim=-1))
+            x = self.conv_pos_embed(x) + x
+        elif self.concat_dim == "time":
+            x = self.cond_proj(torch.cat((x, cond), dim=-1))
+            x = self.cond_pos_embed(x) + x
+            text_embed = self.text_proj(text_embed)
+            text_embed = self.text_pos_embed(text_embed) + text_embed
+            x = torch.cat((x, text_embed), dim=1) # concat in time dimension
+        else:
+            raise ValueError(f"Invalid concat_dim: {self.concat_dim}")
+        
+        return x, mel_len
 
 
 # Transformer backbone using DiT blocks
@@ -118,6 +138,7 @@ class DiT(nn.Module):
         pe_attn_head=None,
         long_skip_connection=False,
         checkpoint_activations=False,
+        concat_dim="channel",
     ):
         super().__init__()
 
@@ -128,7 +149,7 @@ class DiT(nn.Module):
             text_num_embeds, text_dim, mask_padding=text_mask_padding, conv_layers=conv_layers
         )
         self.text_cond, self.text_uncond = None, None  # text cache
-        self.input_embed = InputEmbedding(mel_dim, text_dim, dim)
+        self.input_embed = InputEmbedding(mel_dim, text_dim, dim, concat_dim=concat_dim)
 
         self.rotary_embed = RotaryEmbedding(dim_head)
 
@@ -192,25 +213,25 @@ class DiT(nn.Module):
         mask: bool["b n"] | None = None,  # noqa: F722
         cache=False,
     ):
+        if cache:
+            if drop_text:
+                if self.text_uncond is None:
+                    self.text_uncond = self.text_embed(text, seq_len=text.size(1), drop_text=True)
+                text_embed = self.text_uncond
+            else:
+                if self.text_cond is None:
+                    self.text_cond = self.text_embed(text, seq_len=text.size(1), drop_text=False)
+                text_embed = self.text_cond
+        else:
+            text_embed = self.text_embed(text, seq_len=text.size(1), drop_text=drop_text)
+        x, mel_len = self.input_embed(x, cond, text_embed, drop_audio_cond=drop_audio_cond)
+        
         batch, seq_len = x.shape[0], x.shape[1]
         if time.ndim == 0:
             time = time.repeat(batch)
 
         # t: conditioning time, text: text, x: noised audio + cond audio + text
         t = self.time_embed(time)
-        if cache:
-            if drop_text:
-                if self.text_uncond is None:
-                    self.text_uncond = self.text_embed(text, seq_len, drop_text=True)
-                text_embed = self.text_uncond
-            else:
-                if self.text_cond is None:
-                    self.text_cond = self.text_embed(text, seq_len, drop_text=False)
-                text_embed = self.text_cond
-        else:
-            text_embed = self.text_embed(text, seq_len, drop_text=drop_text)
-        x = self.input_embed(x, cond, text_embed, drop_audio_cond=drop_audio_cond)
-
         rope = self.rotary_embed.forward_from_seq_len(seq_len)
 
         if self.long_skip_connection is not None:
@@ -227,6 +248,5 @@ class DiT(nn.Module):
             x = self.long_skip_connection(torch.cat((x, residual), dim=-1))
 
         x = self.norm_out(x, t)
-        output = self.proj_out(x)
-
+        output = self.proj_out(x)[:, -mel_len:, :]
         return output

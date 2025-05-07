@@ -88,11 +88,31 @@ def list_str_to_idx(
     text: list[str] | list[list[str]],
     vocab_char_map: dict[str, int],  # {char: idx}
     padding_value=-1,
+    left_padding=False,
 ) -> int["b nt"]:  # noqa: F722
-    list_idx_tensors = [torch.tensor([vocab_char_map.get(c, 0) for c in t]) for t in text]  # pinyin or char style
-    text = pad_sequence(list_idx_tensors, padding_value=padding_value, batch_first=True)
-    return text
-
+    max_len = max(len(t) for t in text)
+    if left_padding:
+        # left padding, 0 0 0 1 2 3 4
+        list_idx_tensors = [
+            torch.cat([torch.full((max_len - len(t),), padding_value, dtype=torch.long), torch.tensor([vocab_char_map.get(c, 0) for c in t])])
+            for t in text
+        ]
+        text_mask = [
+            torch.cat([torch.zeros(max_len - len(t), dtype=torch.bool), torch.ones(len(t), dtype=torch.bool)])
+            for t in text
+        ]
+        text = pad_sequence(list_idx_tensors, padding_value=padding_value, batch_first=True)
+        text_mask = torch.stack(text_mask, dim=0)
+    else:
+        # right padding, 1 2 3 4 0 0 0
+        list_idx_tensors = [torch.tensor([vocab_char_map.get(c, 0) for c in t]) for t in text]  # pinyin or char style
+        text_mask = [
+            torch.cat([torch.ones(len(t), dtype=torch.bool), torch.zeros(max_len - len(t), dtype=torch.bool)])
+            for t in text
+        ]
+        text = pad_sequence(list_idx_tensors, padding_value=padding_value, batch_first=True)
+        text_mask = torch.cat(text_mask, dim=-1)
+    return text, text_mask
 
 # Get tokenizer
 

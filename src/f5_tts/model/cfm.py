@@ -115,7 +115,8 @@ class CFM(nn.Module):
 
         if isinstance(text, list):
             if exists(self.vocab_char_map):
-                text = list_str_to_idx(text, self.vocab_char_map).to(device)
+                text, text_mask = list_str_to_idx(text, self.vocab_char_map)
+                text, text_mask = text.to(device), text_mask.to(device)
             else:
                 text = list_str_to_tensor(text).to(device)
             assert text.shape[0] == batch
@@ -226,24 +227,28 @@ class CFM(nn.Module):
         # handle text as string
         if isinstance(text, list):
             if exists(self.vocab_char_map):
-                text = list_str_to_idx(text, self.vocab_char_map).to(device)
+                text, text_mask = list_str_to_idx(text, self.vocab_char_map, left_padding=True)
+                text = text.to(device)
+                text_mask = text_mask.to(device)
             else:
                 text = list_str_to_tensor(text).to(device)
             assert text.shape[0] == batch
-
+        text_seq_len = text.shape[1]
         # lens and mask
-        if not exists(lens):
+        if not exists(lens): # lens is mel spec
             lens = torch.full((batch,), seq_len, device=device)
-
-        mask = lens_to_mask(lens, length=seq_len)  # useless here, as collate_fn will pad to max length in batch
-
+        
+        mel_mask = lens_to_mask(lens, length=seq_len)  # useless here, as collate_fn will pad to max length in batch
+        # inputs_mask = torch.cat([text_mask,mel_mask], dim=-1)
+        
         # get a random span to mask out for training conditionally
         frac_lengths = torch.zeros((batch,), device=self.device).float().uniform_(*self.frac_lengths_mask)
-        rand_span_mask = mask_from_frac_lengths(lens, frac_lengths)
+        rand_span_mask = mask_from_frac_lengths(lens, frac_lengths) # seq len里面需要屏蔽的部分
 
-        if exists(mask):
-            rand_span_mask &= mask
-
+        # 只在mel的部分使用rand_span_mask
+        if exists(mel_mask):
+            rand_span_mask &= mel_mask
+        mask = torch.cat([text_mask, rand_span_mask], dim=-1)
         # mel is x1
         x1 = inp
 
