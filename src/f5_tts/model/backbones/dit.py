@@ -87,11 +87,15 @@ class InputEmbedding(nn.Module):
         if concat_dim == "channel":
             self.proj = nn.Linear(mel_dim * 2 + text_dim, out_dim)
             self.conv_pos_embed = ConvPositionEmbedding(dim=out_dim)
-        elif concat_dim == "time":
+        elif concat_dim == "time2pos":
             self.cond_proj = nn.Linear(mel_dim * 2, out_dim) # noisy_input + cond_input
             self.text_proj = nn.Linear(text_dim, out_dim)
             self.cond_pos_embed = ConvPositionEmbedding(dim=out_dim)
             self.text_pos_embed = ConvPositionEmbedding(dim=out_dim)
+        elif concat_dim == "time1pos":
+            self.cond_proj = nn.Linear(mel_dim * 2, out_dim) # noisy_input + cond_input
+            self.text_proj = nn.Linear(text_dim, out_dim)
+            self.conv_pos_embed = ConvPositionEmbedding(dim=out_dim)
         else:
             raise ValueError(f"Invalid concat_dim: {concat_dim}")
         self.concat_dim = concat_dim
@@ -104,12 +108,17 @@ class InputEmbedding(nn.Module):
         if self.concat_dim == "channel":
             x = self.proj(torch.cat((x, cond, text_embed), dim=-1))
             x = self.conv_pos_embed(x) + x
-        elif self.concat_dim == "time":
+        elif self.concat_dim == "time2pos":
             x = self.cond_proj(torch.cat((x, cond), dim=-1))
             x = self.cond_pos_embed(x) + x
             text_embed = self.text_proj(text_embed)
             text_embed = self.text_pos_embed(text_embed) + text_embed
             x = torch.cat((x, text_embed), dim=1) # concat in time dimension
+        elif self.concat_dim == "time1pos":
+            x = self.cond_proj(torch.cat((x, cond), dim=-1))
+            text_embed = self.text_proj(text_embed)
+            x = torch.cat((x, text_embed), dim=1) # concat in time dimension
+            x = self.conv_pos_embed(x) + x
         else:
             raise ValueError(f"Invalid concat_dim: {self.concat_dim}")
         

@@ -47,10 +47,10 @@ def main():
 
     local = args.local
     if local:  # use local custom checkpoint dir
-        asr_ckpt_dir = "../checkpoints/Systran/faster-whisper-large-v3"
+        asr_ckpt_dir = "/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/niuzhikang-240108120093/dev_f5_be53fb1/checkpoints/faster-whisper-large-v3"
     else:
         asr_ckpt_dir = ""  # auto download to cache dir
-    wavlm_ckpt_dir = "../checkpoints/UniSpeech/wavlm_large_finetune.pth"
+    wavlm_ckpt_dir = "/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/niuzhikang-240108120093/dev_f5_be53fb1/checkpoints/wavlm_large_finetune.pth"
 
     # --------------------------------------------------------------------------
 
