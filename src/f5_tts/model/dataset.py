@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from f5_tts.model.modules import MelSpec
 from f5_tts.model.utils import default
+import numpy as np
 
 
 class HFDataset(Dataset):
@@ -92,6 +93,9 @@ class CustomDataset(Dataset):
         mel_spec_type="vocos",
         preprocessed_mel=False,
         mel_spec_module: nn.Module | None = None,
+        latent_frames=0,
+        latent_path=None,
+        latent_dataset_root=None,
     ):
         self.data = custom_dataset
         self.durations = durations
@@ -101,7 +105,11 @@ class CustomDataset(Dataset):
         self.win_length = win_length
         self.mel_spec_type = mel_spec_type
         self.preprocessed_mel = preprocessed_mel
-
+        if mel_spec_type == "latent":
+            self.latent_path = str(latent_path)
+            print(f"self.latent_path:{self.latent_path}")
+            self.latent_dataset_root = str(latent_dataset_root)
+            self.latent_frames = latent_frames
         if not preprocessed_mel:
             self.mel_spectrogram = default(
                 mel_spec_module,
@@ -129,31 +137,41 @@ class CustomDataset(Dataset):
         while True:
             row = self.data[index]
             audio_path = row["audio_path"]
-            text = row["text"]
-            duration = row["duration"]
-
-            # filter by given length
-            if 0.3 <= duration <= 30:
-                break  # valid
-
+            text = row["text"] 
+            if self.mel_spec_type == "latent":
+                audio_path = audio_path.replace(self.latent_dataset_root,self.latent_path).replace(".wav",".npy")
+                mel_spec = torch.from_numpy(np.load(audio_path)) # 1,dim,t
+                duration = mel_spec.shape[-1]
+                if duration >= 5:
+                    break  # valid
+            elif self.mel_spec_type in ["vocos","bigvgan"]:
+                duration = row["duration"]
+                if 0.3 <= duration <= 30:
+                    break  # valid
+            else:
+                # For other mel_spec_types, assume valid
+                break
             index = (index + 1) % len(self.data)
 
-        if self.preprocessed_mel:
-            mel_spec = torch.tensor(row["mel_spec"])
-        else:
-            audio, source_sample_rate = torchaudio.load(audio_path)
+        if self.mel_spec_type in ["vocos","bigvgan"]:
+            if self.preprocessed_mel:
+                mel_spec = torch.tensor(row["mel_spec"])
+            else:
+                audio, source_sample_rate = torchaudio.load(audio_path)
 
-            # make sure mono input
-            if audio.shape[0] > 1:
-                audio = torch.mean(audio, dim=0, keepdim=True)
+                # make sure mono input
+                if audio.shape[0] > 1:
+                    audio = torch.mean(audio, dim=0, keepdim=True)
 
-            # resample if necessary
-            if source_sample_rate != self.target_sample_rate:
-                resampler = torchaudio.transforms.Resample(source_sample_rate, self.target_sample_rate)
-                audio = resampler(audio)
+                # resample if necessary
+                if source_sample_rate != self.target_sample_rate:
+                    resampler = torchaudio.transforms.Resample(source_sample_rate, self.target_sample_rate)
+                    audio = resampler(audio)
 
-            # to mel spectrogram
-            mel_spec = self.mel_spectrogram(audio)
+                # to mel spectrogram
+                mel_spec = self.mel_spectrogram(audio)
+                mel_spec = mel_spec.squeeze(0)  # '1 d t -> d t'
+        elif self.mel_spec_type == "latent":
             mel_spec = mel_spec.squeeze(0)  # '1 d t -> d t'
 
         return {
@@ -247,6 +265,9 @@ def load_dataset(
     audio_type: str = "raw",
     mel_spec_module: nn.Module | None = None,
     mel_spec_kwargs: dict = dict(),
+    latent_frames: int = 0,
+    latent_path: str = None,
+    latent_dataset_root: str = None,
 ) -> CustomDataset | HFDataset:
     """
     dataset_type    - "CustomDataset" if you want to use tokenizer name and default data path to load for train_dataset
@@ -274,6 +295,9 @@ def load_dataset(
             durations=durations,
             preprocessed_mel=preprocessed_mel,
             mel_spec_module=mel_spec_module,
+            latent_dataset_root=latent_dataset_root,
+            latent_frames=latent_frames,
+            latent_path=latent_path,
             **mel_spec_kwargs,
         )
 

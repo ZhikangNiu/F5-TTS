@@ -203,6 +203,130 @@ def get_inference_prompt(
 
     return prompts_all
 
+def get_ldm_inference_prompt(
+    metainfo,
+    speed=1.0,
+    tokenizer="pinyin",
+    polyphone=True,
+    target_sample_rate=24000,
+    hop_length=256,
+    target_rms=0.1,
+    use_truth_duration=False,
+    infer_batch_size=1,
+    num_buckets=200,
+    min_secs=3,
+    max_secs=40,
+    latent_path=None
+):
+    prompts_all = []
+
+    min_tokens = min_secs * target_sample_rate // hop_length
+    max_tokens = max_secs * target_sample_rate // hop_length
+
+    batch_accum = [0] * num_buckets
+    utts, ref_rms_list, ref_mels, ref_mel_lens, total_mel_lens, final_text_list = (
+        [[] for _ in range(num_buckets)] for _ in range(6)
+    )
+
+    for utt, prompt_text, prompt_wav, gt_text, gt_wav in tqdm(metainfo, desc="Processing prompts..."):
+        # Audio
+        ref_audio, ref_sr = torchaudio.load(prompt_wav)
+        ref_rms = torch.sqrt(torch.mean(torch.square(ref_audio)))
+        if ref_rms < target_rms:
+            ref_audio = ref_audio * target_rms / ref_rms
+        assert ref_audio.shape[-1] > 5000, f"Empty prompt wav: {prompt_wav}, or torchaudio backend issue."
+        if ref_sr != target_sample_rate:
+            resampler = torchaudio.transforms.Resample(ref_sr, target_sample_rate)
+            ref_audio = resampler(ref_audio)
+
+        assert os.path.exists(latent_path), f"latent_path {latent_path} not found."
+        ref_latent_path = prompt_wav.replace("/vepfs/user/tts/speech/LibriSpeech",latent_path).replace(".flac",".npy")
+        # print("load latent from: ", ref_latent_path)
+        ref_mel = torch.from_numpy(np.load(ref_latent_path))
+        ref_mel = ref_mel.squeeze(0)
+
+        # Text
+        if len(prompt_text[-1].encode("utf-8")) == 1:
+            prompt_text = prompt_text + " "
+        text = [prompt_text + gt_text]
+        if tokenizer == "pinyin":
+            text_list = convert_char_to_pinyin(text, polyphone=polyphone)
+        else:
+            text_list = text
+
+        # Duration, mel frame length
+        ref_mel_len = ref_audio.shape[-1] // hop_length
+        if use_truth_duration:
+            gt_audio, gt_sr = torchaudio.load(gt_wav)
+            if gt_sr != target_sample_rate:
+                resampler = torchaudio.transforms.Resample(gt_sr, target_sample_rate)
+                gt_audio = resampler(gt_audio)
+            total_mel_len = ref_mel_len + int(gt_audio.shape[-1] / hop_length / speed)
+
+            # # test vocoder resynthesis
+            # ref_audio = gt_audio
+        else:
+            ref_text_len = len(prompt_text.encode("utf-8"))
+            gen_text_len = len(gt_text.encode("utf-8"))
+            total_mel_len = ref_mel_len + int(ref_mel_len / ref_text_len * gen_text_len / speed)
+
+        ref_mel = ref_mel.squeeze(0)
+
+        # deal with batch
+        assert infer_batch_size > 0, "infer_batch_size should be greater than 0."
+        assert min_tokens <= total_mel_len <= max_tokens, (
+            f"Audio {utt} has duration {total_mel_len * hop_length // target_sample_rate}s out of range [{min_secs}, {max_secs}]."
+        )
+        bucket_i = math.floor((total_mel_len - min_tokens) / (max_tokens - min_tokens + 1) * num_buckets)
+
+        utts[bucket_i].append(utt)
+        ref_rms_list[bucket_i].append(ref_rms)
+        ref_mels[bucket_i].append(ref_mel)
+        ref_mel_lens[bucket_i].append(ref_mel_len)
+        total_mel_lens[bucket_i].append(total_mel_len)
+        final_text_list[bucket_i].extend(text_list)
+
+        batch_accum[bucket_i] += total_mel_len
+
+        if batch_accum[bucket_i] >= infer_batch_size:
+            prompts_all.append(
+                (
+                    utts[bucket_i],
+                    ref_rms_list[bucket_i],
+                    padded_mel_batch(ref_mels[bucket_i]),
+                    ref_mel_lens[bucket_i],
+                    total_mel_lens[bucket_i],
+                    final_text_list[bucket_i],
+                )
+            )
+            batch_accum[bucket_i] = 0
+            (
+                utts[bucket_i],
+                ref_rms_list[bucket_i],
+                ref_mels[bucket_i],
+                ref_mel_lens[bucket_i],
+                total_mel_lens[bucket_i],
+                final_text_list[bucket_i],
+            ) = [], [], [], [], [], []
+
+    # add residual
+    for bucket_i, bucket_frames in enumerate(batch_accum):
+        if bucket_frames > 0:
+            prompts_all.append(
+                (
+                    utts[bucket_i],
+                    ref_rms_list[bucket_i],
+                    padded_mel_batch(ref_mels[bucket_i]),
+                    ref_mel_lens[bucket_i],
+                    total_mel_lens[bucket_i],
+                    final_text_list[bucket_i],
+                )
+            )
+    # not only leave easy work for last workers
+    random.seed(666)
+    random.shuffle(prompts_all)
+
+    return prompts_all
 
 # get wav_res_ref_text of seed-tts test metalst
 # https://github.com/BytedanceSpeech/seed-tts-eval
