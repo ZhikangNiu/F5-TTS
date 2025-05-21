@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader, Dataset, SequentialSampler
 from tqdm import tqdm
 
 from f5_tts.model import CFM
-from f5_tts.model.dataset import DynamicBatchSampler, collate_fn
+from f5_tts.model.dataset import DynamicBatchSampler, collate_bpe_fn, collate_fn
 from f5_tts.model.utils import default, exists
 
 
@@ -53,6 +53,7 @@ class Trainer:
         is_local_vocoder: bool = False,  # use local path vocoder
         local_vocoder_path: str = "",  # local vocoder path
         model_cfg_dict: dict = dict(),  # training config
+        tokenizer_type: str = "char",  # "char" | "bpe"
     ):
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
 
@@ -122,7 +123,7 @@ class Trainer:
         self.max_samples = max_samples
         self.grad_accumulation_steps = grad_accumulation_steps
         self.max_grad_norm = max_grad_norm
-
+        self.tokenizer_type = tokenizer_type
         # mel vocoder config
         self.vocoder_name = mel_spec_type
         self.is_local_vocoder = is_local_vocoder
@@ -276,10 +277,15 @@ class Trainer:
         else:
             generator = None
 
+        if self.tokenizer_type == "bpe":
+            collate_func = collate_bpe_fn
+        else:
+            collate_func = collate_fn
+            
         if self.batch_size_type == "sample":
             train_dataloader = DataLoader(
                 train_dataset,
-                collate_fn=collate_fn,
+                collate_fn=collate_func,
                 num_workers=num_workers,
                 pin_memory=True,
                 persistent_workers=True,

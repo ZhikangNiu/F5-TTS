@@ -9,7 +9,7 @@ import jieba
 import torch
 from pypinyin import Style, lazy_pinyin
 from torch.nn.utils.rnn import pad_sequence
-
+from typing import Optional
 
 # seed everything
 
@@ -86,38 +86,59 @@ def list_str_to_tensor(text: list[str], padding_value=-1) -> int["b nt"]:  # noq
 # char tokenizer, based on custom dataset's extracted .txt file
 def list_str_to_idx(
     text: list[str] | list[list[str]],
-    vocab_char_map: dict[str, int],  # {char: idx}
+    vocab_char_map: Optional[dict[str, int]] = None,  # {char: idx}
     padding_value=-1,
     left_padding=False,
 ) -> int["b nt"]:  # noqa: F722
     max_len = max(len(t) for t in text)
-    if left_padding:
-        # left padding, 0 0 0 1 2 3 4
-        list_idx_tensors = [
-            torch.cat([torch.full((max_len - len(t),), padding_value, dtype=torch.long), torch.tensor([vocab_char_map.get(c, 0) for c in t])])
-            for t in text
-        ]
-        text_mask = [
-            torch.cat([torch.zeros(max_len - len(t), dtype=torch.bool), torch.ones(len(t), dtype=torch.bool)])
-            for t in text
-        ]
+    if vocab_char_map is not None:
+        if left_padding:
+            # left padding, 0 0 0 1 2 3 4
+            list_idx_tensors = [
+                torch.cat([torch.full((max_len - len(t),), padding_value, dtype=torch.long), torch.tensor([vocab_char_map.get(c, 0) for c in t])])
+                for t in text
+            ]
+            text_mask = [
+                torch.cat([torch.zeros(max_len - len(t), dtype=torch.bool), torch.ones(len(t), dtype=torch.bool)])
+                for t in text
+            ]
+            text = pad_sequence(list_idx_tensors, padding_value=padding_value, batch_first=True)
+            text_mask = torch.stack(text_mask, dim=0)
+        else:
+            # right padding, 1 2 3 4 0 0 0
+            list_idx_tensors = [torch.tensor([vocab_char_map.get(c, 0) for c in t]) for t in text]  # pinyin or char style
+            text_mask = [
+                torch.cat([torch.ones(len(t), dtype=torch.bool), torch.zeros(max_len - len(t), dtype=torch.bool)])
+                for t in text
+            ]
+            text = pad_sequence(list_idx_tensors, padding_value=padding_value, batch_first=True)
+            text_mask = torch.stack(text_mask, dim=0)
+    else:
+        if left_padding:
+            list_idx_tensors = [
+                torch.cat([torch.full((max_len - len(t),), padding_value, dtype=torch.long), t])
+                for t in text
+            ]
+            text_mask = [
+                torch.cat([torch.zeros(max_len - len(t), dtype=torch.bool), torch.ones(len(t), dtype=torch.bool)])
+                for t in text
+            ]
+        else:
+            list_idx_tensors = [torch.LongTensor(t) for t in text]
+            text_mask = [
+                torch.cat([torch.ones(len(t), dtype=torch.bool), torch.zeros(max_len - len(t), dtype=torch.bool)])
+                for t in text
+            ]
         text = pad_sequence(list_idx_tensors, padding_value=padding_value, batch_first=True)
         text_mask = torch.stack(text_mask, dim=0)
-    else:
-        # right padding, 1 2 3 4 0 0 0
-        list_idx_tensors = [torch.tensor([vocab_char_map.get(c, 0) for c in t]) for t in text]  # pinyin or char style
-        text_mask = [
-            torch.cat([torch.ones(len(t), dtype=torch.bool), torch.zeros(max_len - len(t), dtype=torch.bool)])
-            for t in text
-        ]
-        text = pad_sequence(list_idx_tensors, padding_value=padding_value, batch_first=True)
-        text_mask = torch.cat(text_mask, dim=-1)
     return text, text_mask
+
+
 
 # Get tokenizer
 
 
-def get_tokenizer(dataset_name, tokenizer: str = "pinyin"):
+def get_tokenizer(dataset_name, tokenizer: str = "pinyin", vocab_size=None):
     """
     tokenizer   - "pinyin" do g2p for only chinese characters, need .txt vocab_file
                 - "char" for char-wise tokenizer, need .txt vocab_file
@@ -147,6 +168,9 @@ def get_tokenizer(dataset_name, tokenizer: str = "pinyin"):
                 vocab_char_map[char[:-1]] = i
         vocab_size = len(vocab_char_map)
 
+    elif tokenizer == "bpe":
+        vocab_char_map = None
+    
     return vocab_char_map, vocab_size
 
 

@@ -29,13 +29,14 @@ def main(model_cfg):
         tokenizer_path = model_cfg.datasets.name
     else:
         tokenizer_path = model_cfg.model.tokenizer_path
-    vocab_char_map, vocab_size = get_tokenizer(tokenizer_path, tokenizer)
+    vocab_char_map, vocab_size = get_tokenizer(tokenizer_path, tokenizer, vocab_size=model_cfg.model.vocab_size)
 
     # set model
     model = CFM(
         transformer=model_cls(**model_arc, text_num_embeds=vocab_size, mel_dim=model_cfg.model.mel_spec.n_mel_channels),
         mel_spec_kwargs=model_cfg.model.mel_spec,
         vocab_char_map=vocab_char_map,
+        tokenizer_type=model_cfg.model.tokenizer
     )
 
     # init trainer

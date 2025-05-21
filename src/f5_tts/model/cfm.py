@@ -46,6 +46,8 @@ class CFM(nn.Module):
         mel_spec_kwargs: dict = dict(),
         frac_lengths_mask: tuple[float, float] = (0.7, 1.0),
         vocab_char_map: dict[str:int] | None = None,
+        tokenizer_type: str = "char",  # "char" | "bpe"
+        left_padding: bool = False
     ):
         super().__init__()
 
@@ -73,7 +75,9 @@ class CFM(nn.Module):
 
         # vocab map for tokenization
         self.vocab_char_map = vocab_char_map
-
+        self.tokenizer_type = tokenizer_type
+        self.left_padding = left_padding
+        
     @property
     def device(self):
         return next(self.parameters()).device
@@ -114,11 +118,8 @@ class CFM(nn.Module):
         # text
 
         if isinstance(text, list):
-            if exists(self.vocab_char_map):
-                text, text_mask = list_str_to_idx(text, self.vocab_char_map)
-                text, text_mask = text.to(device), text_mask.to(device)
-            else:
-                text = list_str_to_tensor(text).to(device)
+            text, text_mask = list_str_to_idx([text], self.vocab_char_map,left_padding=left_padding)
+            text, text_mask = text.to(device), text_mask.to(device)
             assert text.shape[0] == batch
 
         # duration
@@ -226,12 +227,11 @@ class CFM(nn.Module):
 
         # handle text as string
         if isinstance(text, list):
-            if exists(self.vocab_char_map):
-                text, text_mask = list_str_to_idx(text, self.vocab_char_map, left_padding=True)
-                text = text.to(device)
-                text_mask = text_mask.to(device)
-            else:
-                text = list_str_to_tensor(text).to(device)
+            # if exists(self.vocab_char_map):
+            text, text_mask = list_str_to_idx(text, self.vocab_char_map,left_padding=left_padding)
+            text, text_mask = text.to(device), text_mask.to(device)
+            # else:
+                # text = list_str_to_tensor(text).to(device)
             assert text.shape[0] == batch
         text_seq_len = text.shape[1]
         # lens and mask

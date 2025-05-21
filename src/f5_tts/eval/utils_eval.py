@@ -12,6 +12,11 @@ from tqdm import tqdm
 from f5_tts.eval.ecapa_tdnn import ECAPA_TDNN_SMALL
 from f5_tts.model.modules import MelSpec
 from f5_tts.model.utils import convert_char_to_pinyin
+from tokenizers import Tokenizer
+
+def set_tokenizer(tokenizer_path):
+    tokenizer = Tokenizer.from_file(tokenizer_path)
+    return tokenizer
 
 
 # seedtts testset metainfo: utt, prompt_text, prompt_wav, gt_text, gt_wav
@@ -86,6 +91,7 @@ def get_inference_prompt(
     num_buckets=200,
     min_secs=3,
     max_secs=40,
+    tokenizer_path=None,
 ):
     prompts_all = []
 
@@ -123,6 +129,8 @@ def get_inference_prompt(
         text = [prompt_text + gt_text]
         if tokenizer == "pinyin":
             text_list = convert_char_to_pinyin(text, polyphone=polyphone)
+        elif tokenizer == "bpe":
+            text_list = set_tokenizer(tokenizer_path).encode(text[0]).ids
         else:
             text_list = text
 

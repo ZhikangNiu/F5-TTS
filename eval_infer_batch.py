@@ -1,7 +1,6 @@
 import os
 import sys
 
-
 sys.path.append(os.getcwd())
 
 import argparse
@@ -24,7 +23,6 @@ from f5_tts.infer.utils_infer import load_checkpoint, load_vocoder
 from f5_tts.model import CFM
 from f5_tts.model.utils import get_tokenizer
 
-
 accelerator = Accelerator()
 device = f"cuda:{accelerator.process_index}"
 
@@ -46,10 +44,9 @@ def main():
     parser.add_argument("-nfe", "--nfestep", default=32, type=int)
     parser.add_argument("-o", "--odemethod", default="euler")
     parser.add_argument("-ss", "--swaysampling", default=-1, type=float)
-    parser.add_argument("--cfg", default=2.0, type=float)
 
     parser.add_argument("-t", "--testset", required=True)
-    parser.add_argument("-tp", "--tokenizer_path", default=None, type=str)
+
     args = parser.parse_args()
 
     seed = args.seed
@@ -63,7 +60,7 @@ def main():
     testset = args.testset
 
     infer_batch_size = 1  # max frames. 1 for ddp single inference (recommended)
-    cfg_strength = args.cfg
+    cfg_strength = 2.0
     speed = 1.0
     use_truth_duration = False
     no_ref_audio = False
@@ -81,9 +78,7 @@ def main():
     hop_length = model_cfg.model.mel_spec.hop_length
     win_length = model_cfg.model.mel_spec.win_length
     n_fft = model_cfg.model.mel_spec.n_fft
-    tokenizer_path = args.tokenizer_path
-    assert tokenizer == "bpe" and tokenizer_path is not None, "Tokenizer must be bpe and tokenizer_path must be provided"
-    
+
     if testset == "ls_pc_test_clean":
         metalst = rel_path + "/data/librispeech_pc_test_clean_cross_sentence.lst"
         librispeech_test_clean_path = "/inspire/hdd/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/public-project/public/public_datas/speech/LibriSpeech/test-clean/"  # test-clean path
@@ -121,7 +116,6 @@ def main():
         target_rms=target_rms,
         use_truth_duration=use_truth_duration,
         infer_batch_size=infer_batch_size,
-        tokenizer_path=tokenizer_path,
     )
 
     # Vocoder model
@@ -133,7 +127,7 @@ def main():
     vocoder = load_vocoder(vocoder_name=mel_spec_type, is_local=local, local_path=vocoder_local_path)
 
     # Tokenizer
-    vocab_char_map, vocab_size = get_tokenizer(dataset_name, tokenizer,vocab_size=model_cfg.model.vocab_size)
+    vocab_char_map, vocab_size = get_tokenizer(dataset_name, tokenizer)
 
     # Model
     model = CFM(

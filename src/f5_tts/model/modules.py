@@ -502,6 +502,85 @@ class AttnProcessor:
 
         return x
 
+class CrossAttnProcessor:
+    def __init__(self, pe_attn_head: int | None = None):
+        self.pe_attn_head = pe_attn_head
+
+    def __call__(
+        self,
+        attn: Attention,
+        x: float["b n d"],  # noised input x  # noqa: F722
+        c: float["b nt d"] = None,  # context c, here text # noqa: F722
+        mask: bool["b n"] | None = None,  # noqa: F722
+        rope=None,  # rotary position embedding for x
+        c_rope=None,  # rotary position embedding for c
+    ) -> torch.FloatTensor:
+        batch_size = x.shape[0]
+
+        # 1. 投影
+        # query 来自输入 x
+        query = attn.to_q(x)
+        # key 和 value 来自上下文 c
+        key = attn.to_k(c)
+        value = attn.to_v(c)
+
+        # 2. 重塑维度用于多头注意力
+        inner_dim = key.shape[-1]
+        head_dim = inner_dim // attn.heads
+        query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+        key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+        value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+
+        # 3. 应用 QK 归一化
+        if attn.q_norm is not None:
+            query = attn.q_norm(query)
+        if attn.k_norm is not None:
+            key = attn.k_norm(key)
+
+        # 4. 应用旋转位置编码
+        if rope is not None:
+            freqs, xpos_scale = rope
+            q_xpos_scale, k_xpos_scale = (xpos_scale, xpos_scale**-1.0) if xpos_scale is not None else (1.0, 1.0)
+
+            if self.pe_attn_head is not None:
+                pn = self.pe_attn_head
+                query[:, :pn, :, :] = apply_rotary_pos_emb(query[:, :pn, :, :], freqs, q_xpos_scale)
+                key[:, :pn, :, :] = apply_rotary_pos_emb(key[:, :pn, :, :], freqs, k_xpos_scale)
+            else:
+                query = apply_rotary_pos_emb(query, freqs, q_xpos_scale)
+                key = apply_rotary_pos_emb(key, freqs, k_xpos_scale)
+
+        # 5. 处理 mask
+        if mask is not None:
+            # 扩展 mask 维度以匹配注意力头
+            attn_mask = mask.unsqueeze(1).unsqueeze(1)  # 'b n -> b 1 1 n'
+            attn_mask = attn_mask.expand(batch_size, attn.heads, query.shape[-2], key.shape[-2])
+        else:
+            attn_mask = None
+
+        # 6. 计算注意力
+        x = F.scaled_dot_product_attention(
+            query, key, value, 
+            attn_mask=attn_mask, 
+            dropout_p=0.0, 
+            is_causal=False
+        )
+        
+        # 7. 重塑回原始维度
+        x = x.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
+        x = x.to(query.dtype)
+
+        # 8. 输出投影和 dropout
+        x = attn.to_out[0](x)
+        x = attn.to_out[1](x)
+
+        # 9. 应用 mask（如果需要）
+        if mask is not None:
+            mask = mask.unsqueeze(-1)
+            x = x.masked_fill(~mask, 0.0)
+
+        return x
+
 
 # Joint Attention processor for MM-DiT
 # modified from diffusers/src/diffusers/models/attention_processor.py
