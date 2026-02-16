@@ -1,6 +1,9 @@
 # training script.
 
 import os
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 from importlib.resources import files
 
 import hydra

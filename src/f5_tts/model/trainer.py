@@ -54,7 +54,8 @@ class Trainer:
         local_vocoder_path: str = "",  # local vocoder path
         model_cfg_dict: dict = dict(),  # training config
     ):
-        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+        # ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+        ddp_kwargs = DistributedDataParallelKwargs()
 
         if logger == "wandb" and not wandb.api.api_key:
             logger = None
@@ -101,6 +102,18 @@ class Trainer:
                 self.writer = SummaryWriter(log_dir=f"runs/{wandb_run_name}")
 
         self.model = model
+        # Activation checkpointing introduces higher-order ops that are incompatible
+        # with Dynamo's DDP optimizer path on torch 2.4.
+        # if self.accelerator.num_processes > 1:
+        #     torch._dynamo.config.optimize_ddp = False
+
+        # self.model.transformer = torch.compile(
+        #     self.model.transformer,
+        #     mode="default",
+        #     fullgraph=False,
+        #     dynamic=True,
+        # )
+
 
         if self.is_main:
             self.ema_model = EMA(model, include_online_model=False, **ema_kwargs)
@@ -373,6 +386,7 @@ class Trainer:
                     loss, cond, pred = self.model(
                         mel_spec, text=text_inputs, lens=mel_lengths, noise_scheduler=self.noise_scheduler
                     )
+                    del cond, pred
                     self.accelerator.backward(loss)
 
                     if self.max_grad_norm > 0 and self.accelerator.sync_gradients:
