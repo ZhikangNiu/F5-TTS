@@ -1,14 +1,24 @@
 #!/bin/bash
 set -e
 export PYTHONWARNINGS="ignore::UserWarning,ignore::FutureWarning"
-
+export LD_LIBRARY_PATH=`python3 -c 'import os; import nvidia.cublas.lib; import nvidia.cudnn.lib; print(os.path.dirname(nvidia.cublas.lib.__file__) + ":" + os.path.dirname(nvidia.cudnn.lib.__file__))'`
+if [ ! -d "$HOME/.cache/torch" ]; then
+    mkdir -p "$HOME/.cache/torch"
+fi
+if [ ! -d "$HOME/.cache/torch/hub/checkpoints" ]; then
+    mkdir -p "$HOME/.cache/torch/hub/checkpoints"
+fi
+cp -r /inspire/hdd/global_user/chenxie-25019/download_ckpts/hub ~/.cache/torch
+cp /inspire/hdd/global_user/chenxie-25019/download_ckpts/utmos22_strong_step7459_v1.pt ~/.cache/torch/hub/checkpoints/
+cp -r /inspire/hdd/global_user/chenxie-25019/download_ckpts/s3prl ~/.cache
 # Configuration parameters
-MODEL_NAME="F5TTS_v1_Base"
+MODEL_NAME="F5TTS_v1_Base_mmdit_conv"
 SEEDS=(0 1 2)
-CKPTSTEPS=(1250000)
+CKPTSTEPS=(100000)
 TASKS=("seedtts_test_zh" "seedtts_test_en" "ls_pc_test_clean")
-LS_TEST_CLEAN_PATH="data/LibriSpeech/test-clean"
-GPUS="[0,1,2,3,4,5,6,7]"
+LS_TEST_CLEAN_PATH="/inspire/dataset/librispeech/v1/test-clean/"
+# GPUS="[0,1,2,3,4,5,6,7]"
+GPUS="[0]"
 OFFLINE_MODE=false
 
 # Parse arguments

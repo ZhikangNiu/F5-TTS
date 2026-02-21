@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import gc
+import logging
 import math
 import os
+import time
 
 import torch
 import torchaudio
-import wandb
 from accelerate import Accelerator
+from accelerate.logging import get_logger
 from accelerate.utils import DistributedDataParallelKwargs
 from ema_pytorch import EMA
 from torch.optim import AdamW
@@ -15,9 +17,14 @@ from torch.optim.lr_scheduler import LinearLR, SequentialLR
 from torch.utils.data import DataLoader, Dataset, SequentialSampler
 from tqdm import tqdm
 
+import wandb
 from f5_tts.model import CFM
 from f5_tts.model.dataset import DynamicBatchSampler, collate_fn
 from f5_tts.model.utils import default, exists
+
+
+logging.basicConfig(level=logging.INFO)
+logger = get_logger(__name__)
 
 
 # trainer
@@ -49,6 +56,7 @@ class Trainer:
         accelerate_kwargs: dict = dict(),
         ema_kwargs: dict = dict(),
         bnb_optimizer: bool = False,
+        fused_adam: bool = False,
         mel_spec_type: str = "vocos",  # "vocos" | "bigvgan"
         is_local_vocoder: bool = False,  # use local path vocoder
         local_vocoder_path: str = "",  # local vocoder path
@@ -152,7 +160,7 @@ class Trainer:
 
             self.optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=learning_rate)
         else:
-            self.optimizer = AdamW(model.parameters(), lr=learning_rate)
+            self.optimizer = AdamW(model.parameters(), lr=learning_rate, fused=fused_adam)
         self.model, self.optimizer = self.accelerator.prepare(self.model, self.optimizer)
 
     @property
@@ -351,6 +359,9 @@ class Trainer:
         else:
             skipped_epoch = 0
 
+        iter_times = []
+        iter_start = time.time()
+
         for epoch in range(skipped_epoch, self.epochs):
             self.model.train()
             if exists(resumable_with_seed) and epoch == skipped_epoch:
@@ -401,6 +412,8 @@ class Trainer:
                         self.ema_model.update()
 
                     global_update += 1
+                    iter_times.append(time.time() - iter_start)
+                    iter_start = time.time()
                     progress_bar.update(1)
                     progress_bar.set_postfix(update=str(global_update), loss=loss.item())
 
@@ -414,6 +427,15 @@ class Trainer:
 
                 if global_update % self.last_per_updates == 0 and self.accelerator.sync_gradients:
                     self.save_checkpoint(global_update, last=True)
+                    if iter_times:
+                        avg_iter = sum(iter_times) / len(iter_times)
+                        peak_allocated = torch.cuda.max_memory_allocated() / 1024**3
+                        peak_reserved = torch.cuda.max_memory_reserved() / 1024**3
+                        logger.info(
+                            f"[Update {global_update}] Avg iter time: {avg_iter:.4f}s, "
+                            f"Peak GPU allocated: {peak_allocated:.2f}GB, reserved: {peak_reserved:.2f}GB"
+                        )
+                        iter_times = []
 
                 if global_update % self.save_per_updates == 0 and self.accelerator.sync_gradients:
                     self.save_checkpoint(global_update)
@@ -449,6 +471,16 @@ class Trainer:
                             f"{log_samples_path}/update_{global_update}_ref.wav", ref_audio, target_sample_rate
                         )
                         self.model.train()
+
+            if iter_times:
+                avg_iter = sum(iter_times) / len(iter_times)
+                peak_allocated = torch.cuda.max_memory_allocated() / 1024**3
+                peak_reserved = torch.cuda.max_memory_reserved() / 1024**3
+                logger.info(
+                    f"[Epoch {epoch + 1}/{self.epochs}] Avg iter time: {avg_iter:.4f}s, "
+                    f"Peak GPU allocated: {peak_allocated:.2f}GB, reserved: {peak_reserved:.2f}GB"
+                )
+                iter_times = []
 
         self.save_checkpoint(global_update, last=True)
 

@@ -16,6 +16,7 @@ optim:
   grad_accumulation_steps: 1  # note: updates = steps / grad_accumulation_steps
   max_grad_norm: 1.0  # gradient clipping
   bnb_optimizer: False  # use bnb 8bit AdamW optimizer or not
+  fused_adam: False  # use fused AdamW optimizer or not
 
 model:
   name: F5TTS_v1_Base  # model name
@@ -48,6 +49,9 @@ model:
 
 ckpts:
   logger: wandb  # wandb | tensorboard | null
+  wandb_project: CFM-TTS
+  wandb_run_name: ${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}
+  wandb_resume_id: null
   log_samples: True  # infer random sample per save checkpoint. wip, normal to fail with extra long samples
   save_per_updates: 50000  # save checkpoint per updates
   keep_last_n_checkpoints: -1  # -1 to keep all, 0 to not save intermediate, > 0 to keep last N checkpoints

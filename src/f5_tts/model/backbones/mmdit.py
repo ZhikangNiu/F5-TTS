@@ -16,8 +16,10 @@ from x_transformers.x_transformers import RotaryEmbedding
 
 from f5_tts.model.modules import (
     AdaLayerNorm_Final,
+    ConvNeXtV2Block,
     ConvPositionEmbedding,
     MMDiTBlock,
+    TextTransformerBlock,
     TimestepEmbedding,
     get_pos_embed_indices,
     precompute_freqs_cis,
@@ -28,14 +30,48 @@ from f5_tts.model.modules import (
 
 
 class TextEmbedding(nn.Module):
-    def __init__(self, out_dim, text_num_embeds, mask_padding=True):
+    def __init__(
+        self,
+        out_dim,
+        text_num_embeds,
+        mask_padding=True,
+        text_layers=0,
+        text_mult=2,
+        text_block_type="conv",
+        text_dim=None,
+    ):
         super().__init__()
         self.text_embed = nn.Embedding(text_num_embeds + 1, out_dim)  # will use 0 as filler token
 
         self.mask_padding = mask_padding  # mask filler and batch padding tokens or not
+        self.text_block_type = text_block_type
 
-        self.precompute_max_pos = 1024
-        self.register_buffer("freqs_cis", precompute_freqs_cis(out_dim, self.precompute_max_pos), persistent=False)
+        # sinusoidal pos emb for non-transformer path
+        if text_block_type != "transformer":
+            self.precompute_max_pos = 8192
+            self.register_buffer("freqs_cis", precompute_freqs_cis(out_dim, self.precompute_max_pos), persistent=False)
+
+        if text_layers > 0:
+            self.extra_modeling = True
+            if text_block_type == "conv":
+                self.text_blocks = nn.ModuleList(
+                    [ConvNeXtV2Block(out_dim, out_dim * text_mult) for _ in range(text_layers)]
+                )
+            elif text_block_type == "transformer":
+                text_dim = text_dim or out_dim
+                dim_head = 64
+                heads = text_dim // dim_head
+                self.in_proj = nn.Linear(out_dim, text_dim) if text_dim != out_dim else nn.Identity()
+                self.out_proj = nn.Linear(text_dim, out_dim) if text_dim != out_dim else nn.Identity()
+                self.rotary_embed = RotaryEmbedding(dim_head)
+                self.text_blocks = nn.ModuleList(
+                    [
+                        TextTransformerBlock(text_dim, heads=heads, dim_head=dim_head, ff_mult=text_mult)
+                        for _ in range(text_layers)
+                    ]
+                )
+        else:
+            self.extra_modeling = False
 
     def forward(self, text: int["b nt"], drop_text=False) -> int["b nt d"]:
         text = text + 1  # use 0 as filler token. preprocess of batch pad -1, see list_str_to_idx()
@@ -47,16 +83,38 @@ class TextEmbedding(nn.Module):
 
         text = self.text_embed(text)  # b nt -> b nt d
 
-        # sinus pos emb
-        batch_start = torch.zeros((text.shape[0],), dtype=torch.long)
-        batch_text_len = text.shape[1]
-        pos_idx = get_pos_embed_indices(batch_start, batch_text_len, max_pos=self.precompute_max_pos)
-        text_pos_embed = self.freqs_cis[pos_idx]
+        # sinusoidal pos emb for non-transformer path
+        if self.text_block_type != "transformer":
+            batch_start = torch.zeros((text.shape[0],), dtype=torch.long)
+            batch_text_len = text.shape[1]
+            pos_idx = get_pos_embed_indices(batch_start, batch_text_len, max_pos=self.precompute_max_pos)
+            text = text + self.freqs_cis[pos_idx]
 
-        text = text + text_pos_embed
-
-        if self.mask_padding:
-            text = text.masked_fill(text_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)), 0.0)
+        # text blocks
+        if self.extra_modeling:
+            if self.text_block_type == "transformer":
+                attn_mask = ~text_mask if self.mask_padding else None
+                if self.mask_padding:
+                    text = text.masked_fill(text_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)), 0.0)
+                text = self.in_proj(text)
+                rope = self.rotary_embed.forward_from_seq_len(text.shape[1])
+                for block in self.text_blocks:
+                    text = block(text, mask=attn_mask, rope=rope)
+                    if self.mask_padding:
+                        text = text.masked_fill(text_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)), 0.0)
+                text = self.out_proj(text)
+            else:
+                if self.mask_padding:
+                    text = text.masked_fill(text_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)), 0.0)
+                    for block in self.text_blocks:
+                        text = block(text)
+                        text = text.masked_fill(text_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)), 0.0)
+                else:
+                    for block in self.text_blocks:
+                        text = block(text)
+        else:
+            if self.mask_padding:
+                text = text.masked_fill(text_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)), 0.0)
 
         return text
 
@@ -96,12 +154,24 @@ class MMDiT(nn.Module):
         text_num_embeds=256,
         text_mask_padding=True,
         qk_norm=None,
+        text_layers=0,
+        text_mult=2,
+        text_block_type="conv",
+        text_dim=None,
         checkpoint_activations=False,
     ):
         super().__init__()
 
         self.time_embed = TimestepEmbedding(dim)
-        self.text_embed = TextEmbedding(dim, text_num_embeds, mask_padding=text_mask_padding)
+        self.text_embed = TextEmbedding(
+            dim,
+            text_num_embeds,
+            mask_padding=text_mask_padding,
+            text_layers=text_layers,
+            text_mult=text_mult,
+            text_block_type=text_block_type,
+            text_dim=text_dim,
+        )
         self.text_cond, self.text_uncond = None, None  # text cache
         self.audio_embed = AudioEmbedding(mel_dim, dim)
 

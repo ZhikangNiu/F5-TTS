@@ -3,14 +3,14 @@ hydra:
     dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 datasets:
-  name: Emilia_ZH_EN
+  name: Emilia_ZH_EN  # dataset name
   batch_size_per_gpu: 38400  # 8 GPUs, 8 * 38400 = 307200
   batch_size_type: frame  # frame | sample
   max_samples: 64  # max sequences per batch if use frame-wise batch_size. we set 32 for small models, 64 for base models
-  num_workers: 16
+  num_workers: 24
 
 optim:
-  epochs: 11  # only suitable for Emilia, if you want to train it on LibriTTS, set epoch 686
+  epochs: 11
   learning_rate: 7.5e-5
   num_warmup_updates: 20000  # warmup updates
   grad_accumulation_steps: 1  # note: updates = steps / grad_accumulation_steps
@@ -19,22 +19,23 @@ optim:
   fused_adam: False  # use fused AdamW optimizer or not
 
 model:
-  name: F5TTS_Small
-  tokenizer: pinyin
+  name: F5TTS_v1_MMDiT_Conv_Base  # model name
+  tokenizer: pinyin  # tokenizer type
   tokenizer_path: null  # if 'custom' tokenizer, define the path want to use (should be vocab.txt)
-  backbone: DiT
+  backbone: MMDiT
   arch:
-    dim: 768
-    depth: 18
-    heads: 12
+    dim: 1024
+    depth: 22
+    heads: 16
     ff_mult: 2
-    text_dim: 512
-    text_mask_padding: False
-    conv_layers: 4
-    pe_attn_head: 1
-    attn_backend: torch  # torch | flash_attn
-    attn_mask_enabled: False
-    checkpoint_activations: False  # recompute activations and save memory for extra compute
+    text_mask_padding: True
+    qk_norm: null  # null | rms_norm
+    text_layers: 4
+    text_mult: 2
+    # pe_attn_head: null
+    # attn_backend: torch  # torch | flash_attn
+    # attn_mask_enabled: False
+    checkpoint_activations: True  # recompute activations and save memory for extra compute
   mel_spec:
     target_sample_rate: 24000
     n_mel_channels: 100

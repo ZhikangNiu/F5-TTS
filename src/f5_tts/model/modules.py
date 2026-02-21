@@ -544,6 +544,29 @@ class AttnProcessor:
         return x
 
 
+# Text Transformer Block (Pre-LN, no time embedding)
+
+
+class TextTransformerBlock(nn.Module):
+    def __init__(self, dim, heads=8, dim_head=64, ff_mult=2, dropout=0.0):
+        super().__init__()
+        self.norm_attn = nn.LayerNorm(dim, eps=1e-6)
+        self.attn = Attention(
+            processor=AttnProcessor(attn_mask_enabled=True),
+            dim=dim,
+            heads=heads,
+            dim_head=dim_head,
+            dropout=dropout,
+        )
+        self.norm_ff = nn.LayerNorm(dim, eps=1e-6)
+        self.ff = FeedForward(dim=dim, mult=ff_mult, dropout=dropout, approximate="tanh")
+
+    def forward(self, x, mask=None, rope=None):
+        x = x + self.attn(x=self.norm_attn(x), mask=mask, rope=rope)
+        x = x + self.ff(self.norm_ff(x))
+        return x
+
+
 # Joint Attention processor for MM-DiT
 # modified from diffusers/src/diffusers/models/attention_processor.py
 

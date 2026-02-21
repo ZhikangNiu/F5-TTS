@@ -50,7 +50,9 @@ def main():
     eval_task = args.eval_task
     lang = args.lang
     gen_wav_dir = args.gen_wav_dir
-    metalst = rel_path + f"/data/seedtts_testset/{lang}/meta.lst"  # seed-tts testset
+    metalst = (
+        f"/inspire/hdd/global_user/chenxie-25019/download_datas/seedtts_testset/{lang}/meta.lst"  # seed-tts testset
+    )
 
     # NOTE. paraformer-zh result will be slightly different according to the number of gpus, cuz batchsize is different
     #       zh 1.254 seems a result of 4 workers wer_seed_tts
@@ -60,12 +62,12 @@ def main():
     local = args.local
     if local:  # use local custom checkpoint dir
         if lang == "zh":
-            asr_ckpt_dir = "../checkpoints/funasr"  # paraformer-zh dir under funasr
+            asr_ckpt_dir = "/inspire/hdd/global_user/chenxie-25019/download_ckpts"  # paraformer-zh dir under funasr
         elif lang == "en":
-            asr_ckpt_dir = "../checkpoints/Systran/faster-whisper-large-v3"
+            asr_ckpt_dir = "/inspire/hdd/global_user/chenxie-25019/download_ckpts/faster-whisper-large-v3/"
     else:
         asr_ckpt_dir = ""  # auto download to cache dir
-    wavlm_ckpt_dir = "../checkpoints/UniSpeech/wavlm_large_finetune.pth"
+    wavlm_ckpt_dir = "/inspire/hdd/global_user/chenxie-25019/download_ckpts/wavlm_large_finetune.pth"
 
     # --------------------------------------------------------------------------
 

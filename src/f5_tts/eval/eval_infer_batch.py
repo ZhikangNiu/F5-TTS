@@ -92,11 +92,11 @@ def main():
         metainfo = get_librispeech_test_clean_metainfo(metalst, librispeech_test_clean_path)
 
     elif testset == "seedtts_test_zh":
-        metalst = rel_path + "/data/seedtts_testset/zh/meta.lst"
+        metalst = "/inspire/hdd/global_user/chenxie-25019/download_datas/seedtts_testset/zh/meta.lst"
         metainfo = get_seedtts_testset_metainfo(metalst)
 
     elif testset == "seedtts_test_en":
-        metalst = rel_path + "/data/seedtts_testset/en/meta.lst"
+        metalst = "/inspire/hdd/global_user/chenxie-25019/download_datas/seedtts_testset/en/meta.lst"
         metainfo = get_seedtts_testset_metainfo(metalst)
 
     # path to save genereted wavs
@@ -128,7 +128,7 @@ def main():
     # Vocoder model
     local = args.local
     if mel_spec_type == "vocos":
-        vocoder_local_path = "../checkpoints/charactr/vocos-mel-24khz"
+        vocoder_local_path = "/inspire/hdd/global_user/chenxie-25019/download_ckpts/vocos-mel-24khz"
     elif mel_spec_type == "bigvgan":
         vocoder_local_path = "../checkpoints/bigvgan_v2_24khz_100band_256x"
     vocoder = load_vocoder(vocoder_name=mel_spec_type, is_local=local, local_path=vocoder_local_path)
