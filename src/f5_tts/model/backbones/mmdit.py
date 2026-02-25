@@ -159,6 +159,8 @@ class MMDiT(nn.Module):
         text_block_type="conv",
         text_dim=None,
         checkpoint_activations=False,
+        attn_backend="torch",
+        attn_mask_enabled=False,
     ):
         super().__init__()
 
@@ -190,6 +192,8 @@ class MMDiT(nn.Module):
                     ff_mult=ff_mult,
                     context_pre_only=i == depth - 1,
                     qk_norm=qk_norm,
+                    attn_backend=attn_backend,
+                    attn_mask_enabled=attn_mask_enabled,
                 )
                 for i in range(depth)
             ]
@@ -267,6 +271,7 @@ class MMDiT(nn.Module):
 
         # t: conditioning (time), c: context (text + masked cond audio), x: noised input audio
         t = self.time_embed(time)
+        c_mask = (text + 1) != 0  # True = valid, False = padding (-1 tokens)
         if cfg_infer:  # pack cond & uncond forward: b n d -> 2b n d
             x_cond, c_cond = self.get_input_embed(x, cond, text, drop_audio_cond=False, drop_text=False, cache=cache)
             x_uncond, c_uncond = self.get_input_embed(x, cond, text, drop_audio_cond=True, drop_text=True, cache=cache)
@@ -274,6 +279,7 @@ class MMDiT(nn.Module):
             c = torch.cat((c_cond, c_uncond), dim=0)
             t = torch.cat((t, t), dim=0)
             mask = torch.cat((mask, mask), dim=0) if mask is not None else None
+            c_mask = torch.cat((c_mask, c_mask), dim=0)
         else:
             x, c = self.get_input_embed(
                 x, cond, text, drop_audio_cond=drop_audio_cond, drop_text=drop_text, cache=cache
@@ -287,10 +293,10 @@ class MMDiT(nn.Module):
         for block in self.transformer_blocks:
             if self.checkpoint_activations:
                 c, x = torch.utils.checkpoint.checkpoint(
-                    self.ckpt_wrapper(block), x, c, t, mask, rope_audio, rope_text, use_reentrant=False
+                    self.ckpt_wrapper(block), x, c, t, mask, rope_audio, rope_text, c_mask, use_reentrant=False
                 )
             else:
-                c, x = block(x, c, t, mask=mask, rope=rope_audio, c_rope=rope_text)
+                c, x = block(x, c, t, mask=mask, rope=rope_audio, c_rope=rope_text, c_mask=c_mask)
 
         x = self.norm_out(x, t)
         output = self.proj_out(x)
