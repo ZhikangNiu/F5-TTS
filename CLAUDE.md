@@ -76,6 +76,10 @@ If pre-commit is not yet installed locally:
 pip install pre-commit && pre-commit install
 ```
 
+## Response Guidelines
+
+- When locating or referencing relevant code, always include the full file path and line number (e.g. `src/f5_tts/model/trainer.py:448`).
+
 ## Architecture
 
 ### Core Pipeline

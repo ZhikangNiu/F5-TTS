@@ -46,6 +46,7 @@ def main():
     parser.add_argument("-nfe", "--nfestep", default=32, type=int)
     parser.add_argument("-o", "--odemethod", default="euler")
     parser.add_argument("-ss", "--swaysampling", default=-1, type=float)
+    parser.add_argument("--dtype", default="fp16", type=str)
 
     parser.add_argument("-t", "--testset", required=True)
     parser.add_argument(
@@ -63,6 +64,8 @@ def main():
     nfe_step = args.nfestep
     ode_method = args.odemethod
     sway_sampling_coef = args.swaysampling
+    dtype_map = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}
+    dtype = dtype_map.get(args.dtype, torch.float16)
 
     testset = args.testset
 
@@ -168,7 +171,8 @@ def main():
         else:
             raise ValueError("The checkpoint does not exist or cannot be found in given location.")
 
-    dtype = torch.float32 if mel_spec_type == "bigvgan" else None
+    # default setting is fp16
+    dtype = torch.float32 if mel_spec_type == "bigvgan" else dtype
     model = load_checkpoint(model, ckpt_path, device, dtype=dtype, use_ema=use_ema)
 
     if not os.path.exists(output_dir) and accelerator.is_main_process:
