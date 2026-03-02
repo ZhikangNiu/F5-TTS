@@ -52,6 +52,9 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+.claude/*
+src/f5_tts/scripts/.claude/*
+src/third_party/.claude/*
 nosetests.xml
 coverage.xml
 *.cover

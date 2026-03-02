@@ -300,6 +300,19 @@ class RMSNorm(nn.Module):
         return x
 
 
+def get_rms_norm(qk_norm: str, dim: int, eps: float = 1e-6) -> nn.Module:
+    if qk_norm == "rms_norm":
+        return RMSNorm(dim, eps=eps)
+    elif qk_norm == "torch":
+        return torch.nn.RMSNorm(dim, elementwise_affine=True)
+    elif qk_norm == "liger":
+        from liger_kernel.transformers import LigerRMSNorm
+
+        return LigerRMSNorm(dim, eps=eps)
+    else:
+        raise ValueError(f"Unsupported qk_norm: {qk_norm}. Options: rms_norm, torch, liger")
+
+
 # AdaLayerNorm
 # return with modulated x for attn input, and params for later mlp modulation
 
@@ -359,6 +372,54 @@ class FeedForward(nn.Module):
         return self.ff(x)
 
 
+class SwiGLU(nn.Module):
+    """
+    Flux 2 uses a SwiGLU-style activation in the transformer feedforward sub-blocks, but with the linear projection
+    layer fused into the first linear layer of the FF sub-block. Thus, this module has no trainable parameters.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.gate_fn = nn.SiLU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x1, x2 = x.chunk(2, dim=-1)
+        x = self.gate_fn(x1) * x2
+        return x
+
+
+class SwiGLUFeedForward(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        dim_out: int | None = None,
+        mult: float = 3.0,
+    ):
+        super().__init__()
+        inner_dim = int(dim * mult)
+        dim_out = dim_out or dim
+
+        # SwiGLU will reduce the dimension by half
+        self.linear_in = nn.Linear(dim, inner_dim * 2, bias=False)
+        self.act_fn = SwiGLU()
+        self.linear_out = nn.Linear(inner_dim, dim_out, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.linear_in(x)
+        x = self.act_fn(x)
+        x = self.linear_out(x)
+        return x
+
+
+def get_ffn(ffn_type: str, dim: int, ff_mult: float, dropout: float = 0.0) -> nn.Module:
+    if ffn_type == "gelu":
+        return FeedForward(dim=dim, mult=ff_mult, dropout=dropout, approximate="tanh")
+    elif ffn_type == "swiglu_ffn":
+        return SwiGLUFeedForward(dim=dim, mult=ff_mult)
+    else:
+        raise ValueError(f"Unsupported ffn_type: {ffn_type}. Options: gelu, swiglu_ffn")
+
+
 # Attention with possible joint part
 # modified from diffusers/src/diffusers/models/attention_processor.py
 
@@ -397,11 +458,9 @@ class Attention(nn.Module):
         if qk_norm is None:
             self.q_norm = None
             self.k_norm = None
-        elif qk_norm == "rms_norm":
-            self.q_norm = RMSNorm(dim_head, eps=1e-6)
-            self.k_norm = RMSNorm(dim_head, eps=1e-6)
         else:
-            raise ValueError(f"Unimplemented qk_norm: {qk_norm}")
+            self.q_norm = get_rms_norm(qk_norm, dim_head)
+            self.k_norm = get_rms_norm(qk_norm, dim_head)
 
         if self.context_dim is not None:
             self.to_q_c = nn.Linear(context_dim, self.inner_dim)
@@ -410,9 +469,9 @@ class Attention(nn.Module):
             if qk_norm is None:
                 self.c_q_norm = None
                 self.c_k_norm = None
-            elif qk_norm == "rms_norm":
-                self.c_q_norm = RMSNorm(dim_head, eps=1e-6)
-                self.c_k_norm = RMSNorm(dim_head, eps=1e-6)
+            else:
+                self.c_q_norm = get_rms_norm(qk_norm, dim_head)
+                self.c_k_norm = get_rms_norm(qk_norm, dim_head)
 
         self.to_out = nn.ModuleList([])
         self.to_out.append(nn.Linear(self.inner_dim, dim))
@@ -513,6 +572,7 @@ class AttnProcessor:
             key = key.transpose(1, 2)
             value = value.transpose(1, 2)
             if self.attn_mask_enabled and mask is not None:
+                total_seq_len = query.shape[1]
                 query, indices, q_cu_seqlens, q_max_seqlen_in_batch, _ = unpad_input(query, mask)
                 key, _, k_cu_seqlens, k_max_seqlen_in_batch, _ = unpad_input(key, mask)
                 value, _, _, _, _ = unpad_input(value, mask)
@@ -525,7 +585,7 @@ class AttnProcessor:
                     q_max_seqlen_in_batch,
                     k_max_seqlen_in_batch,
                 )
-                x = pad_input(x, indices, batch_size, q_max_seqlen_in_batch)
+                x = pad_input(x, indices, batch_size, total_seq_len)
                 x = x.reshape(batch_size, -1, attn.heads * head_dim)
             else:
                 x = flash_attn_func(query, key, value, dropout_p=0.0, causal=False)
@@ -726,6 +786,7 @@ class DiTBlock(nn.Module):
         pe_attn_head=None,
         attn_backend="torch",  # "torch" or "flash_attn"
         attn_mask_enabled=True,
+        ffn_type="gelu",
     ):
         super().__init__()
 
@@ -744,7 +805,7 @@ class DiTBlock(nn.Module):
         )
 
         self.ff_norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
-        self.ff = FeedForward(dim=dim, mult=ff_mult, dropout=dropout, approximate="tanh")
+        self.ff = get_ffn(ffn_type, dim, ff_mult, dropout)
 
     def forward(self, x, t, mask=None, rope=None):  # x: noised input, t: time embedding
         # pre-norm & modulation for attention input
@@ -788,6 +849,7 @@ class MMDiTBlock(nn.Module):
         qk_norm=None,
         attn_backend="torch",
         attn_mask_enabled=False,
+        ffn_type="gelu",
     ):
         super().__init__()
         if context_dim is None:
@@ -812,12 +874,12 @@ class MMDiTBlock(nn.Module):
 
         if not context_pre_only:
             self.ff_norm_c = nn.LayerNorm(context_dim, elementwise_affine=False, eps=1e-6)
-            self.ff_c = FeedForward(dim=context_dim, mult=ff_mult, dropout=dropout, approximate="tanh")
+            self.ff_c = get_ffn(ffn_type, context_dim, ff_mult, dropout)
         else:
             self.ff_norm_c = None
             self.ff_c = None
         self.ff_norm_x = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
-        self.ff_x = FeedForward(dim=dim, mult=ff_mult, dropout=dropout, approximate="tanh")
+        self.ff_x = get_ffn(ffn_type, dim, ff_mult, dropout)
 
     def forward(
         self, x, c, t, mask=None, rope=None, c_rope=None, c_mask=None

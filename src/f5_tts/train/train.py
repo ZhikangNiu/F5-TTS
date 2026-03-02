@@ -1,12 +1,15 @@
 # training script.
 
 import os
+import shutil
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 from importlib.resources import files
+from pathlib import Path
 
 import hydra
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import OmegaConf
 
 from f5_tts.model import CFM, Trainer
@@ -19,6 +22,12 @@ os.chdir(str(files("f5_tts").joinpath("../..")))  # change working directory to 
 
 @hydra.main(version_base="1.3", config_path=str(files("f5_tts").joinpath("configs")), config_name=None)
 def main(model_cfg):
+    # Copy source code to Hydra output dir for reproducibility (rank 0 only)
+    if os.environ.get("LOCAL_RANK", "0") == "0":
+        output_dir = Path(HydraConfig.get().runtime.output_dir)
+        src_dir = Path(str(files("f5_tts").joinpath(".")))
+        shutil.copytree(src_dir, output_dir / "f5_tts", dirs_exist_ok=True)
+
     model_cls = hydra.utils.get_class(f"f5_tts.model.{model_cfg.model.backbone}")
     model_arc = model_cfg.model.arch
     tokenizer = model_cfg.model.tokenizer

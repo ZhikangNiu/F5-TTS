@@ -165,6 +165,7 @@ class DiT(nn.Module):
         attn_mask_enabled=False,
         long_skip_connection=False,
         checkpoint_activations=False,
+        ffn_type="gelu",
     ):
         super().__init__()
 
@@ -198,6 +199,7 @@ class DiT(nn.Module):
                     pe_attn_head=pe_attn_head,
                     attn_backend=attn_backend,
                     attn_mask_enabled=attn_mask_enabled,
+                    ffn_type=ffn_type,
                 )
                 for _ in range(depth)
             ]

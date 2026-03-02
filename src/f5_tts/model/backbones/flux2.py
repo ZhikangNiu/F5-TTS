@@ -18,129 +18,16 @@ from f5_tts.model.modules import (
     AdaLayerNorm_Final,
     ConvNeXtV2Block,
     ConvPositionEmbedding,
+    DiTBlock,
     MMDiTBlock,
     TextTransformerBlock,
     TimestepEmbedding,
     get_pos_embed_indices,
     precompute_freqs_cis,
 )
+from f5_tts.model.backbones.mmdit import TextEmbedding, AudioEmbedding
 
-
-# text embedding
-
-
-class TextEmbedding(nn.Module):
-    def __init__(
-        self,
-        out_dim,
-        text_num_embeds,
-        mask_padding=True,
-        text_layers=0,
-        text_mult=2,
-        text_block_type="conv",
-        text_dim=None,
-    ):
-        super().__init__()
-        self.text_embed = nn.Embedding(text_num_embeds + 1, out_dim)  # will use 0 as filler token
-
-        self.mask_padding = mask_padding  # mask filler and batch padding tokens or not
-        self.text_block_type = text_block_type
-
-        # sinusoidal pos emb for non-transformer path
-        if text_block_type != "transformer":
-            self.precompute_max_pos = 8192
-            self.register_buffer("freqs_cis", precompute_freqs_cis(out_dim, self.precompute_max_pos), persistent=False)
-
-        if text_layers > 0:
-            self.extra_modeling = True
-            if text_block_type == "conv":
-                self.text_blocks = nn.ModuleList(
-                    [ConvNeXtV2Block(out_dim, out_dim * text_mult) for _ in range(text_layers)]
-                )
-            elif text_block_type == "transformer":
-                text_dim = text_dim or out_dim
-                dim_head = 64
-                heads = text_dim // dim_head
-                self.in_proj = nn.Linear(out_dim, text_dim) if text_dim != out_dim else nn.Identity()
-                self.out_proj = nn.Linear(text_dim, out_dim) if text_dim != out_dim else nn.Identity()
-                self.rotary_embed = RotaryEmbedding(dim_head)
-                self.text_blocks = nn.ModuleList(
-                    [
-                        TextTransformerBlock(text_dim, heads=heads, dim_head=dim_head, ff_mult=text_mult)
-                        for _ in range(text_layers)
-                    ]
-                )
-        else:
-            self.extra_modeling = False
-
-    def forward(self, text: int["b nt"], drop_text=False) -> int["b nt d"]:
-        text = text + 1  # use 0 as filler token. preprocess of batch pad -1, see list_str_to_idx()
-        if self.mask_padding:
-            text_mask = text == 0
-
-        if drop_text:  # cfg for text
-            text = torch.zeros_like(text)
-
-        text = self.text_embed(text)  # b nt -> b nt d
-
-        # sinusoidal pos emb for non-transformer path
-        if self.text_block_type != "transformer":
-            batch_start = torch.zeros((text.shape[0],), dtype=torch.long)
-            batch_text_len = text.shape[1]
-            pos_idx = get_pos_embed_indices(batch_start, batch_text_len, max_pos=self.precompute_max_pos)
-            text = text + self.freqs_cis[pos_idx]
-
-        # text blocks
-        if self.extra_modeling:
-            if self.text_block_type == "transformer":
-                attn_mask = ~text_mask if self.mask_padding else None
-                if self.mask_padding:
-                    text = text.masked_fill(text_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)), 0.0)
-                text = self.in_proj(text)
-                rope = self.rotary_embed.forward_from_seq_len(text.shape[1])
-                for block in self.text_blocks:
-                    text = block(text, mask=attn_mask, rope=rope)
-                    if self.mask_padding:
-                        text = text.masked_fill(text_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)), 0.0)
-                text = self.out_proj(text)
-            else:
-                if self.mask_padding:
-                    text = text.masked_fill(text_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)), 0.0)
-                    for block in self.text_blocks:
-                        text = block(text)
-                        text = text.masked_fill(text_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)), 0.0)
-                else:
-                    for block in self.text_blocks:
-                        text = block(text)
-        else:
-            if self.mask_padding:
-                text = text.masked_fill(text_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)), 0.0)
-
-        return text
-
-
-# noised input & masked cond audio embedding
-
-
-class AudioEmbedding(nn.Module):
-    def __init__(self, in_dim, out_dim):
-        super().__init__()
-        self.linear = nn.Linear(2 * in_dim, out_dim)
-        self.conv_pos_embed = ConvPositionEmbedding(out_dim)
-
-    def forward(self, x: float["b n d"], cond: float["b n d"], drop_audio_cond=False):
-        if drop_audio_cond:
-            cond = torch.zeros_like(cond)
-        x = torch.cat((x, cond), dim=-1)
-        x = self.linear(x)
-        x = self.conv_pos_embed(x) + x
-        return x
-
-
-# Transformer backbone using MM-DiT blocks
-
-
-class MMDiT(nn.Module):
+class Flux2Audio(nn.Module):
     def __init__(
         self,
         *,
@@ -162,6 +49,8 @@ class MMDiT(nn.Module):
         attn_backend="torch",
         attn_mask_enabled=False,
         ffn_type="gelu",
+        num_layers=8,
+        num_single_layers=24
     ):
         super().__init__()
 
@@ -183,6 +72,7 @@ class MMDiT(nn.Module):
         self.dim = dim
         self.depth = depth
 
+        # Double Stream Transformer Blocks
         self.transformer_blocks = nn.ModuleList(
             [
                 MMDiTBlock(
@@ -191,13 +81,31 @@ class MMDiT(nn.Module):
                     dim_head=dim_head,
                     dropout=dropout,
                     ff_mult=ff_mult,
-                    context_pre_only=i == depth - 1,
                     qk_norm=qk_norm,
                     attn_backend=attn_backend,
                     attn_mask_enabled=attn_mask_enabled,
                     ffn_type=ffn_type,
                 )
-                for i in range(depth)
+                for _ in range(num_layers)
+            ]
+        )
+        
+        # Single Stream Transformer Blocks
+        
+        self.single_transformer_blocks = nn.ModuleList(
+            [
+                DiTBlock(
+                    dim=dim,
+                    heads=heads,
+                    dim_head=dim_head,
+                    ff_mult=ff_mult,
+                    dropout=dropout,
+                    qk_norm=qk_norm,
+                    attn_backend=attn_backend,
+                    attn_mask_enabled=attn_mask_enabled,
+                    ffn_type=ffn_type,
+                )
+                for _ in range(num_single_layers)
             ]
         )
         self.norm_out = AdaLayerNorm_Final(dim)  # final modulation
@@ -215,6 +123,9 @@ class MMDiT(nn.Module):
             nn.init.constant_(block.attn_norm_c.linear.weight, 0)
             nn.init.constant_(block.attn_norm_c.linear.bias, 0)
 
+        for block in self.single_transformer_blocks:
+            nn.init.constant_(block.attn_norm.linear.weight, 0)
+            nn.init.constant_(block.attn_norm.linear.bias, 0)
         # Zero-out output layers:
         nn.init.constant_(self.norm_out.linear.weight, 0)
         nn.init.constant_(self.norm_out.linear.bias, 0)
@@ -299,7 +210,25 @@ class MMDiT(nn.Module):
                 )
             else:
                 c, x = block(x, c, t, mask=mask, rope=rope_audio, c_rope=rope_text, c_mask=c_mask)
+        
+        # concat hidden states in seq dim
+        x = torch.cat([c, x], dim=1)
+        rope = self.rotary_embed.forward_from_seq_len(seq_len + text_len)
 
+        # extend mask to cover both text and audio tokens
+        if mask is not None:
+            mask = torch.cat([c_mask, mask], dim=1)
+
+        for block in self.single_transformer_blocks:
+            if self.checkpoint_activations:
+                x = torch.utils.checkpoint.checkpoint(
+                    self.ckpt_wrapper(block), x, t, mask, rope, use_reentrant=False
+                )
+            else:
+                x = block(x, t, mask=mask, rope=rope)
+        
+        # get audio output
+        x = x[:, text_len:]
         x = self.norm_out(x, t)
         output = self.proj_out(x)
 

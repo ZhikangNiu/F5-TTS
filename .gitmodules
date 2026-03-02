@@ -1,3 +1,6 @@
 [submodule "src/third_party/BigVGAN"]
 	path = src/third_party/BigVGAN
 	url = https://github.com/NVIDIA/BigVGAN.git
+[submodule "src/third_party/FireRedASR2S"]
+	path = src/third_party/FireRedASR2S
+	url = git@github.com:FireRedTeam/FireRedASR2S.git
