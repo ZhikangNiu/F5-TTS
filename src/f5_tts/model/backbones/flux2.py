@@ -14,18 +14,14 @@ import torch
 from torch import nn
 from x_transformers.x_transformers import RotaryEmbedding
 
+from f5_tts.model.backbones.mmdit import AudioEmbedding, TextEmbedding
 from f5_tts.model.modules import (
     AdaLayerNorm_Final,
-    ConvNeXtV2Block,
-    ConvPositionEmbedding,
     DiTBlock,
     MMDiTBlock,
-    TextTransformerBlock,
     TimestepEmbedding,
-    get_pos_embed_indices,
-    precompute_freqs_cis,
 )
-from f5_tts.model.backbones.mmdit import TextEmbedding, AudioEmbedding
+
 
 class Flux2Audio(nn.Module):
     def __init__(
@@ -49,10 +45,15 @@ class Flux2Audio(nn.Module):
         attn_backend="torch",
         attn_mask_enabled=False,
         ffn_type="gelu",
+        ffn_type_x=None,
+        ffn_type_c=None,
         num_layers=8,
-        num_single_layers=24
+        num_single_layers=24,
     ):
         super().__init__()
+
+        ffn_type_x = ffn_type_x or ffn_type
+        ffn_type_c = ffn_type_c or ffn_type
 
         self.time_embed = TimestepEmbedding(dim)
         self.text_embed = TextEmbedding(
@@ -84,14 +85,15 @@ class Flux2Audio(nn.Module):
                     qk_norm=qk_norm,
                     attn_backend=attn_backend,
                     attn_mask_enabled=attn_mask_enabled,
-                    ffn_type=ffn_type,
+                    ffn_type_x=ffn_type_x,
+                    ffn_type_c=ffn_type_c,
                 )
                 for _ in range(num_layers)
             ]
         )
-        
+
         # Single Stream Transformer Blocks
-        
+
         self.single_transformer_blocks = nn.ModuleList(
             [
                 DiTBlock(
@@ -210,7 +212,7 @@ class Flux2Audio(nn.Module):
                 )
             else:
                 c, x = block(x, c, t, mask=mask, rope=rope_audio, c_rope=rope_text, c_mask=c_mask)
-        
+
         # concat hidden states in seq dim
         x = torch.cat([c, x], dim=1)
         rope = self.rotary_embed.forward_from_seq_len(seq_len + text_len)
@@ -221,12 +223,10 @@ class Flux2Audio(nn.Module):
 
         for block in self.single_transformer_blocks:
             if self.checkpoint_activations:
-                x = torch.utils.checkpoint.checkpoint(
-                    self.ckpt_wrapper(block), x, t, mask, rope, use_reentrant=False
-                )
+                x = torch.utils.checkpoint.checkpoint(self.ckpt_wrapper(block), x, t, mask, rope, use_reentrant=False)
             else:
                 x = block(x, t, mask=mask, rope=rope)
-        
+
         # get audio output
         x = x[:, text_len:]
         x = self.norm_out(x, t)

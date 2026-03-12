@@ -372,6 +372,15 @@ class FeedForward(nn.Module):
         return self.ff(x)
 
 
+class ChannelLastConv1d(nn.Conv1d):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: B, seq, D
+        x = x.permute(0, 2, 1)  # B, D, seq
+        x = super().forward(x)
+        x = x.permute(0, 2, 1)
+        return x
+
+
 class SwiGLU(nn.Module):
     """
     Flux 2 uses a SwiGLU-style activation in the transformer feedforward sub-blocks, but with the linear projection
@@ -411,13 +420,39 @@ class SwiGLUFeedForward(nn.Module):
         return x
 
 
+class SwiGLUConvFeedForward(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        dim_out: int | None = None,
+        mult: float = 3.0,
+        kernel_size: int = 3,
+        padding: int = 1,
+    ):
+        super().__init__()
+        inner_dim = int(dim * mult)
+        dim_out = dim_out or dim
+
+        self.linear_in = ChannelLastConv1d(dim, inner_dim * 2, bias=False, kernel_size=kernel_size, padding=padding)
+        self.act_fn = SwiGLU()
+        self.linear_out = ChannelLastConv1d(inner_dim, dim_out, bias=False, kernel_size=kernel_size, padding=padding)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.linear_in(x)
+        x = self.act_fn(x)
+        x = self.linear_out(x)
+        return x
+
+
 def get_ffn(ffn_type: str, dim: int, ff_mult: float, dropout: float = 0.0) -> nn.Module:
     if ffn_type == "gelu":
         return FeedForward(dim=dim, mult=ff_mult, dropout=dropout, approximate="tanh")
     elif ffn_type == "swiglu_ffn":
         return SwiGLUFeedForward(dim=dim, mult=ff_mult)
+    elif ffn_type == "ConvMLP":
+        return SwiGLUConvFeedForward(dim=dim, mult=ff_mult)
     else:
-        raise ValueError(f"Unsupported ffn_type: {ffn_type}. Options: gelu, swiglu_ffn")
+        raise ValueError(f"Unsupported ffn_type: {ffn_type}. Options: gelu, swiglu_ffn, ConvMLP")
 
 
 # Attention with possible joint part
@@ -850,11 +885,16 @@ class MMDiTBlock(nn.Module):
         attn_backend="torch",
         attn_mask_enabled=False,
         ffn_type="gelu",
+        ffn_type_x=None,
+        ffn_type_c=None,
     ):
         super().__init__()
         if context_dim is None:
             context_dim = dim
         self.context_pre_only = context_pre_only
+
+        ffn_type_x = ffn_type_x or ffn_type
+        ffn_type_c = ffn_type_c or ffn_type
 
         self.attn_norm_c = AdaLayerNorm_Final(context_dim) if context_pre_only else AdaLayerNorm(context_dim)
         self.attn_norm_x = AdaLayerNorm(dim)
@@ -874,12 +914,12 @@ class MMDiTBlock(nn.Module):
 
         if not context_pre_only:
             self.ff_norm_c = nn.LayerNorm(context_dim, elementwise_affine=False, eps=1e-6)
-            self.ff_c = get_ffn(ffn_type, context_dim, ff_mult, dropout)
+            self.ff_c = get_ffn(ffn_type_c, context_dim, ff_mult, dropout)
         else:
             self.ff_norm_c = None
             self.ff_c = None
         self.ff_norm_x = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
-        self.ff_x = get_ffn(ffn_type, dim, ff_mult, dropout)
+        self.ff_x = get_ffn(ffn_type_x, dim, ff_mult, dropout)
 
     def forward(
         self, x, c, t, mask=None, rope=None, c_rope=None, c_mask=None

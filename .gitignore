@@ -6,6 +6,8 @@ data/
 ckpts/
 wandb/
 results/
+swanlog_sync_jobs/
+outputs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

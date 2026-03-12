@@ -162,8 +162,13 @@ class MMDiT(nn.Module):
         attn_backend="torch",
         attn_mask_enabled=False,
         ffn_type="gelu",
+        ffn_type_x=None,
+        ffn_type_c=None,
     ):
         super().__init__()
+
+        ffn_type_x = ffn_type_x or ffn_type
+        ffn_type_c = ffn_type_c or ffn_type
 
         self.time_embed = TimestepEmbedding(dim)
         self.text_embed = TextEmbedding(
@@ -195,7 +200,8 @@ class MMDiT(nn.Module):
                     qk_norm=qk_norm,
                     attn_backend=attn_backend,
                     attn_mask_enabled=attn_mask_enabled,
-                    ffn_type=ffn_type,
+                    ffn_type_x=ffn_type_x,
+                    ffn_type_c=ffn_type_c,
                 )
                 for i in range(depth)
             ]
