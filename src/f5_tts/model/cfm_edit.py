@@ -25,7 +25,6 @@ from torchdiffeq import odeint
 
 from f5_tts.model.cfm import CFM
 from f5_tts.model.utils import (
-    default,
     exists,
     get_epss_timesteps,
     lens_to_mask,
@@ -40,7 +39,7 @@ class CFMEdit(CFM):
         text_encoder,
         text_processor,
         text_encoder_max_length: int = 512,
-        text_drop_idx: int = 40, # ignore template token
+        text_drop_idx: int = 40,  # ignore template token
         **kwargs,
     ):
         # CFM.__init__ expects vocab_char_map; we don't use it, but pass None
@@ -80,7 +79,7 @@ class CFMEdit(CFM):
         tokens = self.text_processor(
             text=formatted_texts,
             padding=True,
-            padding_side="right", # defaults left padding
+            padding_side="right",  # defaults left padding
             truncation=True,
             max_length=self.text_encoder_max_length,
             return_tensors="pt",
@@ -95,7 +94,7 @@ class CFMEdit(CFM):
             output_hidden_states=True,
         )
         hidden = outputs.hidden_states[-1]  # [B, seq, hidden_dim]
-        return hidden[:, self.text_drop_idx:, :], tokens.attention_mask[:, self.text_drop_idx:].bool()
+        return hidden[:, self.text_drop_idx :, :], tokens.attention_mask[:, self.text_drop_idx :].bool()
 
     @torch.no_grad()
     def sample(
@@ -145,9 +144,7 @@ class CFMEdit(CFM):
         # duration at least text/audio prompt length plus one token
         text_len = text_embeds.shape[1]
         non_pad = (text_embeds.abs().sum(-1) > 0).sum(dim=-1)  # valid text tokens
-        duration = torch.maximum(
-            torch.maximum(non_pad, lens) + 1, duration
-        )
+        duration = torch.maximum(torch.maximum(non_pad, lens) + 1, duration)
         duration = duration.clamp(max=max_duration)
         max_duration = duration.amax()
 
@@ -172,14 +169,27 @@ class CFMEdit(CFM):
         def fn(t, x):
             if cfg_strength < 1e-5:
                 pred = self.transformer(
-                    x=x, cond=step_cond, text=text_embeds, time=t,
-                    mask=mask, c_mask=context_mask, drop_audio_cond=False, drop_text=False, cache=True, 
+                    x=x,
+                    cond=step_cond,
+                    text=text_embeds,
+                    time=t,
+                    mask=mask,
+                    c_mask=context_mask,
+                    drop_audio_cond=False,
+                    drop_text=False,
+                    cache=True,
                 )
                 return pred
 
             pred_cfg = self.transformer(
-                x=x, cond=step_cond, text=text_embeds, time=t,
-                mask=mask, c_mask=context_mask, cfg_infer=True, cache=True,
+                x=x,
+                cond=step_cond,
+                text=text_embeds,
+                time=t,
+                mask=mask,
+                c_mask=context_mask,
+                cfg_infer=True,
+                cache=True,
             )
             pred, null_pred = torch.chunk(pred_cfg, 2, dim=0)
             return pred + (pred - null_pred) * cfg_strength
@@ -275,8 +285,14 @@ class CFMEdit(CFM):
             drop_text = False
 
         pred = self.transformer(
-            x=φ, cond=cond, text=text_embeds, time=time,
-            drop_audio_cond=drop_audio_cond, drop_text=drop_text, mask=mask, c_mask=context_mask
+            x=φ,
+            cond=cond,
+            text=text_embeds,
+            time=time,
+            drop_audio_cond=drop_audio_cond,
+            drop_text=drop_text,
+            mask=mask,
+            c_mask=context_mask,
         )
 
         # flow matching loss

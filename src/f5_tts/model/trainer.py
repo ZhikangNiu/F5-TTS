@@ -121,7 +121,6 @@ class Trainer:
         #     dynamic=True,
         # )
 
-
         if self.is_main:
             self.ema_model = EMA(model, include_online_model=False, **ema_kwargs)
             self.ema_model.to(self.accelerator.device)
@@ -214,6 +213,37 @@ class Trainer:
                         oldest_checkpoint = checkpoints.pop(0)
                         os.remove(os.path.join(self.checkpoint_path, oldest_checkpoint))
                         print(f"Removed old checkpoint: {oldest_checkpoint}")
+
+    def log_audio_samples(self, global_update, mel_spec, mel_lengths, text_inputs, batch):
+        if not (self.log_samples and self.accelerator.is_local_main_process):
+            return
+
+        from f5_tts.infer.utils_infer import cfg_strength, nfe_step, sway_sampling_coef
+
+        ref_audio_len = mel_lengths[0]
+        infer_text = [text_inputs[0] + ([" "] if isinstance(text_inputs[0], list) else " ") + text_inputs[0]]
+        with torch.inference_mode(), self.accelerator.autocast():
+            generated, _ = self.accelerator.unwrap_model(self.model).sample(
+                cond=mel_spec[0][:ref_audio_len].unsqueeze(0),
+                text=infer_text,
+                duration=ref_audio_len * 2,
+                steps=nfe_step,
+                cfg_strength=cfg_strength,
+                sway_sampling_coef=sway_sampling_coef,
+            )
+            generated = generated.to(torch.float32)
+            gen_mel_spec = generated[:, ref_audio_len:, :].permute(0, 2, 1).to(self.accelerator.device)
+            ref_mel_spec = batch["mel"][0, :, :ref_audio_len].unsqueeze(0)
+            if self.vocoder_name == "vocos":
+                gen_audio = self.vocoder.decode(gen_mel_spec).cpu()
+                ref_audio = self.vocoder.decode(ref_mel_spec).cpu()
+            elif self.vocoder_name == "bigvgan":
+                gen_audio = self.vocoder(gen_mel_spec).squeeze(0).cpu()
+                ref_audio = self.vocoder(ref_mel_spec).squeeze(0).cpu()
+
+        torchaudio.save(f"{self.log_samples_path}/update_{global_update}_gen.wav", gen_audio, self.target_sample_rate)
+        torchaudio.save(f"{self.log_samples_path}/update_{global_update}_ref.wav", ref_audio, self.target_sample_rate)
+        self.model.train()
 
     def load_checkpoint(self):
         if (
@@ -313,14 +343,14 @@ class Trainer:
 
     def train(self, train_dataset: Dataset, num_workers=16, resumable_with_seed: int = None):
         if self.log_samples:
-            from f5_tts.infer.utils_infer import cfg_strength, load_vocoder, nfe_step, sway_sampling_coef
+            from f5_tts.infer.utils_infer import load_vocoder
 
-            vocoder = load_vocoder(
+            self.vocoder = load_vocoder(
                 vocoder_name=self.vocoder_name, is_local=self.is_local_vocoder, local_path=self.local_vocoder_path
             )
-            target_sample_rate = self.accelerator.unwrap_model(self.model).mel_spec.target_sample_rate
-            log_samples_path = f"{self.checkpoint_path}/samples"
-            os.makedirs(log_samples_path, exist_ok=True)
+            self.target_sample_rate = self.accelerator.unwrap_model(self.model).mel_spec.target_sample_rate
+            self.log_samples_path = f"{self.checkpoint_path}/samples"
+            os.makedirs(self.log_samples_path, exist_ok=True)
 
         if exists(resumable_with_seed):
             generator = torch.Generator()
@@ -456,6 +486,7 @@ class Trainer:
 
                 if global_update % self.last_per_updates == 0 and self.accelerator.sync_gradients:
                     self.save_checkpoint(global_update, last=True)
+                    self.log_audio_samples(global_update, mel_spec, mel_lengths, text_inputs, batch)
                     if iter_times:
                         avg_iter = sum(iter_times) / len(iter_times)
                         peak_allocated = torch.cuda.max_memory_allocated() / 1024**3
@@ -468,38 +499,7 @@ class Trainer:
 
                 if global_update % self.save_per_updates == 0 and self.accelerator.sync_gradients:
                     self.save_checkpoint(global_update)
-
-                    if self.log_samples and self.accelerator.is_local_main_process:
-                        ref_audio_len = mel_lengths[0]
-                        infer_text = [
-                            text_inputs[0] + ([" "] if isinstance(text_inputs[0], list) else " ") + text_inputs[0]
-                        ]
-                        with torch.inference_mode(), self.accelerator.autocast():
-                            generated, _ = self.accelerator.unwrap_model(self.model).sample(
-                                cond=mel_spec[0][:ref_audio_len].unsqueeze(0),
-                                text=infer_text,
-                                duration=ref_audio_len * 2,
-                                steps=nfe_step,
-                                cfg_strength=cfg_strength,
-                                sway_sampling_coef=sway_sampling_coef,
-                            )
-                            generated = generated.to(torch.float32)
-                            gen_mel_spec = generated[:, ref_audio_len:, :].permute(0, 2, 1).to(self.accelerator.device)
-                            ref_mel_spec = batch["mel"][0, :, :ref_audio_len].unsqueeze(0)
-                            if self.vocoder_name == "vocos":
-                                gen_audio = vocoder.decode(gen_mel_spec).cpu()
-                                ref_audio = vocoder.decode(ref_mel_spec).cpu()
-                            elif self.vocoder_name == "bigvgan":
-                                gen_audio = vocoder(gen_mel_spec).squeeze(0).cpu()
-                                ref_audio = vocoder(ref_mel_spec).squeeze(0).cpu()
-
-                        torchaudio.save(
-                            f"{log_samples_path}/update_{global_update}_gen.wav", gen_audio, target_sample_rate
-                        )
-                        torchaudio.save(
-                            f"{log_samples_path}/update_{global_update}_ref.wav", ref_audio, target_sample_rate
-                        )
-                        self.model.train()
+                    self.log_audio_samples(global_update, mel_spec, mel_lengths, text_inputs, batch)
 
             if iter_times:
                 avg_iter = sum(iter_times) / len(iter_times)

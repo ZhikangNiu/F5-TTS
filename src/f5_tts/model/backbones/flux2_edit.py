@@ -157,7 +157,7 @@ class Flux2Edit(nn.Module):
         text: float["b nt h"],  # pre-encoded text embeddings from LLM
         time: float["b"] | float[""],  # time step
         mask: bool["b n"] | None = None,
-        c_mask : bool["b n"] | None = None,
+        c_mask: bool["b n"] | None = None,
         drop_audio_cond: bool = False,
         drop_text: bool = False,
         cfg_infer: bool = False,
@@ -169,7 +169,7 @@ class Flux2Edit(nn.Module):
 
         t = self.time_embed(time)
         text_len = text.shape[1]
-        
+
         # 这里得看下mask的部分
         # text mask: padding positions are all-zero in LLM output
         if c_mask is None:
