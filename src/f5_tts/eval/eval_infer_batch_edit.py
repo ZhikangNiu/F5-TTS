@@ -1,0 +1,267 @@
+import os
+import sys
+
+
+sys.path.append(os.getcwd())
+
+import argparse
+import time
+from importlib.resources import files
+
+import torch
+import torchaudio
+from accelerate import Accelerator
+from hydra.utils import get_class
+from omegaconf import OmegaConf
+from tqdm import tqdm
+from transformers import Qwen2_5OmniProcessor, Qwen2_5OmniThinkerForConditionalGeneration
+
+from f5_tts.eval.utils_eval import (
+    get_inference_prompt,
+    get_librispeech_test_clean_metainfo,
+    get_seedtts_testset_metainfo,
+)
+from f5_tts.infer.utils_infer import load_vocoder
+from f5_tts.model import CFMEdit
+
+
+accelerator = Accelerator()
+device = f"cuda:{accelerator.process_index}"
+
+
+use_ema = True
+target_rms = 0.1
+
+
+rel_path = str(files("f5_tts").joinpath("../../"))
+
+
+def main():
+    parser = argparse.ArgumentParser(description="batch inference")
+
+    parser.add_argument("-s", "--seed", default=None, type=int)
+    parser.add_argument("-n", "--expname", required=True)
+    parser.add_argument("-c", "--ckptstep", default=1250000, type=int)
+
+    parser.add_argument("-nfe", "--nfestep", default=32, type=int)
+    parser.add_argument("-o", "--odemethod", default="euler")
+    parser.add_argument("-ss", "--swaysampling", default=-1, type=float)
+    parser.add_argument("--dtype", default="fp16", type=str)
+    parser.add_argument("-cfg","--cfg_strength", default=2.0, type=float)
+
+    parser.add_argument("-t", "--testset", required=True)
+    parser.add_argument(
+        "-p", "--librispeech_test_clean_path", default=f"{rel_path}/data/LibriSpeech/test-clean", type=str
+    )
+
+    parser.add_argument("--local", action="store_true", help="Use local vocoder checkpoint directory")
+
+    args = parser.parse_args()
+
+    seed = args.seed
+    exp_name = args.expname
+    ckpt_step = args.ckptstep
+
+    nfe_step = args.nfestep
+    ode_method = args.odemethod
+    sway_sampling_coef = args.swaysampling
+    dtype_map = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}
+    dtype = dtype_map.get(args.dtype, torch.float16)
+
+    testset = args.testset
+
+    infer_batch_size = 1  # max frames. 1 for ddp single inference (recommended)
+    cfg_strength = args.cfg_strength
+    speed = 1.0
+    use_truth_duration = False
+    no_ref_audio = False
+
+    model_cfg = OmegaConf.load(str(files("f5_tts").joinpath(f"configs/{exp_name}.yaml")))
+    model_cls = get_class(f"f5_tts.model.{model_cfg.model.backbone}")
+    model_arc = model_cfg.model.arch
+
+    tokenizer = model_cfg.model.tokenizer
+
+    mel_spec_type = model_cfg.model.mel_spec.mel_spec_type
+    target_sample_rate = model_cfg.model.mel_spec.target_sample_rate
+    n_mel_channels = model_cfg.model.mel_spec.n_mel_channels
+    hop_length = model_cfg.model.mel_spec.hop_length
+    win_length = model_cfg.model.mel_spec.win_length
+    n_fft = model_cfg.model.mel_spec.n_fft
+
+    # Load text encoder
+    text_encoder_cfg = model_cfg.model.text_encoder
+    WEIGHT_TYPE_MAP = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
+    weight_dtype = WEIGHT_TYPE_MAP[text_encoder_cfg.get("weight_type", "bf16")]
+
+    thinker = Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(
+        text_encoder_cfg.text_encoder_path,
+        torch_dtype=weight_dtype,
+    )
+    text_encoder = thinker.model
+    del thinker
+    text_processor = Qwen2_5OmniProcessor.from_pretrained(text_encoder_cfg.text_encoder_path)
+
+    if testset == "ls_pc_test_clean":
+        metalst = rel_path + "/data/librispeech_pc_test_clean_cross_sentence.lst"
+        librispeech_test_clean_path = args.librispeech_test_clean_path
+        metainfo = get_librispeech_test_clean_metainfo(metalst, librispeech_test_clean_path)
+
+    elif testset == "seedtts_test_zh":
+        metalst = "/inspire/hdd/global_user/chenxie-25019/download_datas/seedtts_testset/zh/meta.lst"
+        metainfo = get_seedtts_testset_metainfo(metalst)
+
+    elif testset == "seedtts_test_en":
+        metalst = "/inspire/hdd/global_user/chenxie-25019/download_datas/seedtts_testset/en/meta.lst"
+        metainfo = get_seedtts_testset_metainfo(metalst)
+
+    # path to save generated wavs
+    output_dir = (
+        f"{rel_path}/"
+        f"results/{exp_name}_{ckpt_step}/{testset}/"
+        f"seed{seed}_{ode_method}_nfe{nfe_step}_{mel_spec_type}"
+        f"{f'_ss{sway_sampling_coef}' if sway_sampling_coef else ''}"
+        f"_cfg{cfg_strength}_speed{speed}"
+        f"{'_gt-dur' if use_truth_duration else ''}"
+        f"{'_no-ref-audio' if no_ref_audio else ''}"
+    )
+
+    # -------------------------------------------------#
+
+    prompts_all = get_inference_prompt(
+        metainfo,
+        speed=speed,
+        tokenizer=tokenizer,
+        target_sample_rate=target_sample_rate,
+        n_mel_channels=n_mel_channels,
+        hop_length=hop_length,
+        mel_spec_type=mel_spec_type,
+        target_rms=target_rms,
+        use_truth_duration=use_truth_duration,
+        infer_batch_size=infer_batch_size,
+    )
+
+    # Vocoder model
+    local = args.local
+    if mel_spec_type == "vocos":
+        vocoder_local_path = "/inspire/hdd/global_user/chenxie-25019/download_ckpts/vocos-mel-24khz"
+    elif mel_spec_type == "bigvgan":
+        vocoder_local_path = "../checkpoints/bigvgan_v2_24khz_100band_256x"
+    vocoder = load_vocoder(vocoder_name=mel_spec_type, is_local=local, local_path=vocoder_local_path)
+
+    # Model (no tokenizer/vocab needed — CFMEdit handles text via LLM)
+    model = CFMEdit(
+        transformer=model_cls(**model_arc, mel_dim=n_mel_channels),
+        text_encoder=text_encoder,
+        text_processor=text_processor,
+        text_encoder_max_length=text_encoder_cfg.get("text_encoder_max_length", 512),
+        text_drop_idx=text_encoder_cfg.get("text_drop_idx", 40),
+        mel_spec_kwargs=dict(
+            n_fft=n_fft,
+            hop_length=hop_length,
+            win_length=win_length,
+            n_mel_channels=n_mel_channels,
+            target_sample_rate=target_sample_rate,
+            mel_spec_type=mel_spec_type,
+        ),
+        odeint_kwargs=dict(
+            method=ode_method,
+        ),
+    ).to(device)
+
+    ckpt_prefix = rel_path + f"/ckpts/{exp_name}/model_{ckpt_step}"
+    if os.path.exists(ckpt_prefix + ".pt"):
+        ckpt_path = ckpt_prefix + ".pt"
+    elif os.path.exists(ckpt_prefix + ".safetensors"):
+        ckpt_path = ckpt_prefix + ".safetensors"
+    else:
+        print("Loading from self-organized training checkpoints rather than released pretrained.")
+        ckpt_prefix = rel_path + f"/{model_cfg.ckpts.save_dir}/model_{ckpt_step}"
+        if os.path.exists(ckpt_prefix + ".pt"):
+            ckpt_path = ckpt_prefix + ".pt"
+        elif os.path.exists(ckpt_prefix + ".safetensors"):
+            ckpt_path = ckpt_prefix + ".safetensors"
+        else:
+            raise ValueError("The checkpoint does not exist or cannot be found in given location.")
+
+    # Load checkpoint with strict=False (text_encoder weights come from pretrained model, not checkpoint)
+    dtype = torch.float32 if mel_spec_type == "bigvgan" else dtype
+    model = model.to(dtype)
+
+    if ckpt_path.endswith(".safetensors"):
+        from safetensors.torch import load_file
+
+        checkpoint = load_file(ckpt_path, device=device)
+    else:
+        checkpoint = torch.load(ckpt_path, map_location=device, weights_only=True)
+
+    if use_ema:
+        if ckpt_path.endswith(".safetensors"):
+            checkpoint = {"ema_model_state_dict": checkpoint}
+        state_dict = {
+            k.replace("ema_model.", ""): v
+            for k, v in checkpoint["ema_model_state_dict"].items()
+            if k not in ["initted", "step"]
+        }
+    else:
+        if ckpt_path.endswith(".safetensors"):
+            checkpoint = {"model_state_dict": checkpoint}
+        state_dict = checkpoint["model_state_dict"]
+
+    # Remove mel_spec buffers for compatibility
+    for key in ["mel_spec.mel_stft.mel_scale.fb", "mel_spec.mel_stft.spectrogram.window"]:
+        state_dict.pop(key, None)
+
+    model.load_state_dict(state_dict, strict=False)
+    del checkpoint
+    torch.cuda.empty_cache()
+    model = model.to(device)
+
+    if not os.path.exists(output_dir) and accelerator.is_main_process:
+        os.makedirs(output_dir)
+
+    # start batch inference
+    accelerator.wait_for_everyone()
+    start = time.time()
+
+    with accelerator.split_between_processes(prompts_all) as prompts:
+        for prompt in tqdm(prompts, disable=not accelerator.is_local_main_process):
+            utts, ref_rms_list, ref_mels, ref_mel_lens, total_mel_lens, final_text_list = prompt
+            ref_mels = ref_mels.to(device)
+            ref_mel_lens = torch.tensor(ref_mel_lens, dtype=torch.long).to(device)
+            total_mel_lens = torch.tensor(total_mel_lens, dtype=torch.long).to(device)
+
+            # Inference
+            with torch.inference_mode():
+                generated, _ = model.sample(
+                    cond=ref_mels,
+                    text=final_text_list,
+                    duration=total_mel_lens,
+                    lens=ref_mel_lens,
+                    steps=nfe_step,
+                    cfg_strength=cfg_strength,
+                    sway_sampling_coef=sway_sampling_coef,
+                    no_ref_audio=no_ref_audio,
+                    seed=seed,
+                )
+                # Final result
+                for i, gen in enumerate(generated):
+                    gen = gen[ref_mel_lens[i] : total_mel_lens[i], :].unsqueeze(0)
+                    gen_mel_spec = gen.permute(0, 2, 1).to(torch.float32)
+                    if mel_spec_type == "vocos":
+                        generated_wave = vocoder.decode(gen_mel_spec).cpu()
+                    elif mel_spec_type == "bigvgan":
+                        generated_wave = vocoder(gen_mel_spec).squeeze(0).cpu()
+
+                    if ref_rms_list[i] < target_rms:
+                        generated_wave = generated_wave * ref_rms_list[i] / target_rms
+                    torchaudio.save(f"{output_dir}/{utts[i]}.wav", generated_wave, target_sample_rate)
+
+    accelerator.wait_for_everyone()
+    if accelerator.is_main_process:
+        timediff = time.time() - start
+        print(f"Done batch inference in {timediff / 60:.2f} minutes.")
+
+
+if __name__ == "__main__":
+    main()

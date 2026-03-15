@@ -1,0 +1,61 @@
+hydra:
+  run:
+    dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${datasets.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+datasets:
+  name: Emilia_ZH_EN
+  batch_size_per_gpu: 38400
+  batch_size_type: frame
+  max_samples: 64
+  num_workers: 24
+
+optim:
+  epochs: 11
+  learning_rate: 7.5e-5
+  num_warmup_updates: 20000
+  grad_accumulation_steps: 1
+  max_grad_norm: 1.0
+  bnb_optimizer: False
+  fused_adam: True
+
+model:
+  name: F5TTS_v1_Edit
+  backbone: MMDiTEdit
+  cfm_class: CFMEdit
+  text_encoder:
+    name: qwen_omni_3b
+    text_encoder_path: /inspire/hdd/global_user/chenxie-25019/download_ckpts/Qwen2.5-Omni-3B
+    weight_type: bf16
+    freeze_text_encoder: true
+    text_encoder_max_length: 512
+  tokenizer: raw_text
+  tokenizer_path: null
+  arch:
+    dim: 1024
+    depth: 22
+    heads: 16
+    ff_mult: 2
+    text_hidden_dim: 2048
+    mel_dim: 100
+    checkpoint_activations: False
+  mel_spec:
+    target_sample_rate: 24000
+    n_mel_channels: 100
+    hop_length: 256
+    win_length: 1024
+    n_fft: 1024
+    mel_spec_type: vocos
+  vocoder:
+    is_local: False
+    local_path: null
+
+ckpts:
+  logger: wandb
+  wandb_project: CFM-TTS
+  wandb_run_name: ${model.name}_${model.mel_spec.mel_spec_type}_${datasets.name}
+  wandb_resume_id: null
+  log_samples: False
+  save_per_updates: 50000
+  keep_last_n_checkpoints: -1
+  last_per_updates: 5000
+  save_dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${datasets.name}

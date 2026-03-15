@@ -62,8 +62,7 @@ class Trainer:
         local_vocoder_path: str = "",  # local vocoder path
         model_cfg_dict: dict = dict(),  # training config
     ):
-        # ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-        ddp_kwargs = DistributedDataParallelKwargs()
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
 
         if logger == "wandb" and not wandb.api.api_key:
             logger = None
@@ -170,10 +169,24 @@ class Trainer:
     def save_checkpoint(self, update, last=False):
         self.accelerator.wait_for_everyone()
         if self.is_main:
+            model = self.accelerator.unwrap_model(self.model)
+
+            # Check if model has a frozen text_encoder (e.g. CFMEdit with LLM)
+            has_frozen_text_encoder = hasattr(model, "text_encoder") and not any(
+                p.requires_grad for p in model.text_encoder.parameters()
+            )
+
+            model_state_dict = model.state_dict()
+            ema_model_state_dict = self.ema_model.state_dict()
+
+            if has_frozen_text_encoder:
+                model_state_dict = {k: v for k, v in model_state_dict.items() if not k.startswith("text_encoder.")}
+                ema_model_state_dict = {k: v for k, v in ema_model_state_dict.items() if "text_encoder." not in k}
+
             checkpoint = dict(
-                model_state_dict=self.accelerator.unwrap_model(self.model).state_dict(),
+                model_state_dict=model_state_dict,
                 optimizer_state_dict=self.optimizer.state_dict(),
-                ema_model_state_dict=self.ema_model.state_dict(),
+                ema_model_state_dict=ema_model_state_dict,
                 scheduler_state_dict=self.scheduler.state_dict(),
                 update=update,
             )
@@ -249,7 +262,11 @@ class Trainer:
                 del checkpoint["ema_model_state_dict"][key]
 
         if self.is_main:
-            self.ema_model.load_state_dict(checkpoint["ema_model_state_dict"])
+            load_info = self.ema_model.load_state_dict(checkpoint["ema_model_state_dict"], strict=False)
+            if load_info.missing_keys:
+                logger.info(f"Missing keys (ema_model): {load_info.missing_keys}")
+            if load_info.unexpected_keys:
+                logger.info(f"Unexpected keys (ema_model): {load_info.unexpected_keys}")
 
         if "update" in checkpoint or "step" in checkpoint:
             # patch for backward compatibility, with before f992c4e
@@ -264,7 +281,13 @@ class Trainer:
                 if key in checkpoint["model_state_dict"]:
                     del checkpoint["model_state_dict"][key]
 
-            self.accelerator.unwrap_model(self.model).load_state_dict(checkpoint["model_state_dict"])
+            load_info = self.accelerator.unwrap_model(self.model).load_state_dict(
+                checkpoint["model_state_dict"], strict=False
+            )
+            if load_info.missing_keys:
+                logger.info(f"Missing keys (model): {load_info.missing_keys}")
+            if load_info.unexpected_keys:
+                logger.info(f"Unexpected keys (model): {load_info.unexpected_keys}")
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             if self.scheduler:
                 self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
@@ -275,7 +298,13 @@ class Trainer:
                 for k, v in checkpoint["ema_model_state_dict"].items()
                 if k not in ["initted", "update", "step"]
             }
-            self.accelerator.unwrap_model(self.model).load_state_dict(checkpoint["model_state_dict"])
+            load_info = self.accelerator.unwrap_model(self.model).load_state_dict(
+                checkpoint["model_state_dict"], strict=False
+            )
+            if load_info.missing_keys:
+                logger.info(f"Missing keys (model): {load_info.missing_keys}")
+            if load_info.unexpected_keys:
+                logger.info(f"Unexpected keys (model): {load_info.unexpected_keys}")
             update = 0
 
         del checkpoint
