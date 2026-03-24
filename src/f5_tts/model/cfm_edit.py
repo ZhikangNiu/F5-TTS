@@ -15,21 +15,22 @@ d - dimension
 
 from __future__ import annotations
 
+import logging
 from random import random
 from typing import Callable
 
 import torch
 import torch.nn.functional as F
+from accelerate.logging import get_logger
 from torch.nn.utils.rnn import pad_sequence
 from torchdiffeq import odeint
 
 from f5_tts.model.cfm import CFM
-from f5_tts.model.utils import (
-    exists,
-    get_epss_timesteps,
-    lens_to_mask,
-    mask_from_frac_lengths,
-)
+from f5_tts.model.utils import exists, get_epss_timesteps, lens_to_mask, mask_from_frac_lengths
+
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = get_logger(__name__)
 
 
 class CFMEdit(CFM):
@@ -58,7 +59,7 @@ class CFMEdit(CFM):
     @torch.no_grad()
     def encode_text(self, text: list[str], device) -> torch.Tensor:
         """Encode text strings via LLM into hidden states [B, seq, hidden_dim]."""
-        
+
         # 构建 chat messages
         messages_batch = [
             [
@@ -208,10 +209,12 @@ class CFMEdit(CFM):
             y0 = (1 - t_start) * y0 + t_start * test_cond
             steps = int(steps * (1 - t_start))
 
+        # Always compute timesteps in fp32 to avoid bf16 precision collapse
+        # (e.g. cos(small_x) rounds to 1.0 in bf16, making adjacent steps equal)
         if t_start == 0 and use_epss:
-            t = get_epss_timesteps(steps, device=self.device, dtype=step_cond.dtype)
+            t = get_epss_timesteps(steps, device=self.device, dtype=torch.float32)
         else:
-            t = torch.linspace(t_start, 1, steps + 1, device=self.device, dtype=step_cond.dtype)
+            t = torch.linspace(t_start, 1, steps + 1, device=self.device, dtype=torch.float32)
         if sway_sampling_coef is not None:
             t = t + sway_sampling_coef * (torch.cos(torch.pi / 2 * t) - 1 + t)
 

@@ -1,56 +1,44 @@
-# CLAUDE.md
+Please use first-principles thinking. You shouldn’t always assume that I know exactly what I want or how to get it. Stay thoughtful and cautious: start from the original need and the underlying problem. If the motivation or goal is unclear, pause and discuss it with me. If the goal is clear but the path is not the shortest or most effective one, tell me and suggest a better approach.
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+### 1. Plan Mode Default
+- Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions)
+- If something goes sideways, STOP and re-plan immediately - don't keep pushing
+- Use plan mode for verification steps, not just building
+- Write detailed specs upfront to reduce ambiguity
+- In Plan mode, if the ask-codex skill is available, you must first ask for Codex’s opinion before exiting Plan mode and handing the result over to the user for review.
+- Do not write any code in plan mode.
+- After planning, use codex to review your plan, and ask for feedback on potential pitfalls, edge cases, or better approaches before proceeding to implementation.
 
-## Project Overview
+### 2. Subagent Strategy to keep main context window clean
+- Offload research, exploration, and parallel analysis to subagents
+- For complex problems, throw more compute at it via subagents
+- One task per subagent for focused execution
 
-F5-TTS is a text-to-speech system using **Conditional Flow Matching** with Diffusion Transformers. It generates speech by conditioning on a reference audio clip and synthesizing new speech via ODE-based sampling. The project provides two model variants:
-- **F5-TTS (v1)**: DiT backbone with ConvNeXt V2 text encoding — the primary model
-- **E2-TTS**: UNetT backbone (flat-UNet Transformer reproduction)
+### 3. Self-Improvement Loop
+- After ANY correction from the user: update 'tasks/lessons.md' with the pattern
+- Write rules for yourself that prevent the same mistake
+- Ruthlessly iterate on these lessons until mistake rate drops
+- Review lessons at session start for relevant project
 
-Audio representation: mel-spectrograms (100 channels, 24kHz, hop_length=256), reconstructed to waveforms via Vocos or BigVGAN vocoder.
+### 4. Verification Before Done
+- Never mark a task complete without proving it works
+- Diff behavior between main and your changes when relevant
+- Ask yourself: "Would a staff engineer approve this?"
+- Run tests, check logs, demonstrate correctness
 
-## Common Commands
+### 5. Demand Elegance (Balanced)
+- For non-trivial changes: pause and ask "is there a more elegant way?"
+- If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"
+- Skip this for simple, obvious fixes - don't over-engineer
+- Challenge your own work before presenting it
 
-### Installation (editable, for development/training)
-```bash
-pip install -e .
-```
+### 6. Autonomous Bug Fixing
+- When given a bug report: just fix it. Don't ask for hand-holding
+- Point at logs, errors, failing tests -> then resolve them
+- Zero context switching required from the user
+- Go fix failing CI tests without being told how
 
-### Inference
-```bash
-f5-tts_infer-cli --ref_audio ref.wav --ref_text "..." --gen_text "..."
-f5-tts_infer-gradio   # launches web UI
-```
-
-### Training
-```bash
-accelerate config                          # configure multi-GPU, mixed precision
-accelerate launch src/f5_tts/train/train.py --config-name F5TTS_v1_Base.yaml
-
-# override config values via Hydra
-accelerate launch src/f5_tts/train/train.py --config-name F5TTS_v1_Base.yaml \
-  ++datasets.batch_size_per_gpu=19200
-```
-
-### Finetuning
-```bash
-f5-tts_finetune-cli
-f5-tts_finetune-gradio   # Gradio UI for finetuning
-```
-
-### Dataset Preparation
-```bash
-# Specific datasets (fill paths in scripts first)
-python src/f5_tts/train/datasets/prepare_emilia.py
-python src/f5_tts/train/datasets/prepare_libritts.py
-python src/f5_tts/train/datasets/prepare_ljspeech.py
-
-# Custom CSV dataset (format: audio_file|text, absolute paths)
-python src/f5_tts/train/datasets/prepare_csv_wavs.py /path/to/metadata.csv /path/to/output
-```
-
-### Linting
+### 7.Linting
 ```bash
 pip install pre-commit && pre-commit install
 pre-commit run --all-files
@@ -58,7 +46,7 @@ pre-commit run --all-files
 
 Ruff config: line-length 120, target Python 3.10+, imports sorted after 2 blank lines.
 
-## Code Style & Verification
+## 8. Code Style & Verification
 
 Every code change must pass the repository's pre-commit checks before committing. After modifying code, always run:
 ```bash
@@ -76,58 +64,16 @@ If pre-commit is not yet installed locally:
 pip install pre-commit && pre-commit install
 ```
 
-## Response Guidelines
 
-- When locating or referencing relevant code, always include the full file path and line number (e.g. `src/f5_tts/model/trainer.py:448`).
+## Task Management
+1. **Plan First**: Write plan to 'tasks/todo.md' with checkable items
+2. **Verify Plan**: Check in before starting implementation
+3. **Track Progress**: Mark items complete as you go
+4. **Explain Changes**: High-level summary at each step
+5. **Document Results**: Add review to 'tasks/todo.md'
+6. **Capture Lessons**: Update 'tasks/lessons.md' after corrections
 
-## Architecture
-
-### Core Pipeline
-
-```
-Text → Tokenizer (pinyin/char) → Text Embedding + ConvNeXt V2
-                                          ↓
-Reference Audio → Mel Spectrogram → CFM (Conditional Flow Matching) → ODE Solver → Generated Mel → Vocoder → Waveform
-```
-
-### Key Source Layout (`src/f5_tts/`)
-
-- **`model/cfm.py`** — `CFM` class: the central model wrapping a transformer backbone with flow matching. `forward()` computes training loss (MSE between predicted and true flow). `sample()` runs ODE-based inference with classifier-free guidance and sway sampling.
-- **`model/backbones/dit.py`** — `DiT`: Diffusion Transformer, the default F5-TTS v1 backbone (dim=1024, depth=22, heads=16).
-- **`model/backbones/mmdit.py`** — `MMDiT`: Multimodal DiT variant.
-- **`model/backbones/unett.py`** — `UNetT`: flat-UNet Transformer for E2-TTS.
-- **`model/modules.py`** — Building blocks: MelSpec, audio/text embeddings, attention, ConvNeXtV2 blocks.
-- **`model/dataset.py`** — `HFDataset`, `CustomDataset`, and `load_dataset` for data loading.
-- **`model/trainer.py`** — Training loop using HF Accelerate with EMA, gradient accumulation, W&B/TensorBoard logging.
-- **`model/utils.py`** — Tokenizer loading (`get_tokenizer`), masking, positional embeddings.
-- **`infer/utils_infer.py`** — Inference utilities: model/vocoder loading, audio preprocessing, the `infer_process` pipeline.
-- **`api.py`** — `F5TTS` class: high-level Python API for inference.
-- **`configs/`** — Hydra YAML configs (e.g., `F5TTS_v1_Base.yaml`). Training uses `hydra.main()` with config path resolution.
-
-### How Training Works
-
-1. `train/train.py` loads a Hydra config, instantiates the backbone class dynamically via `hydra.utils.get_class(f"f5_tts.model.{cfg.model.backbone}")`.
-2. A `CFM` model wraps the backbone transformer.
-3. `Trainer` handles distributed training via Accelerate, EMA updates, checkpoint saving (every 50k updates by default).
-4. Loss: MSE between predicted flow and ground-truth flow (`x1 - x0`), computed only within randomly masked spans (infilling objective).
-
-### How Inference Works
-
-1. Reference audio is clipped to ~12s, resampled to 24kHz, converted to mel-spectrogram.
-2. Text is normalized and tokenized (pinyin for Chinese, character-based otherwise).
-3. CFM `sample()` runs an ODE from noise → mel-spectrogram using Euler method (default 32 steps), with classifier-free guidance and optional sway sampling.
-4. Vocoder (Vocos by default) reconstructs the waveform from mel-spectrogram.
-
-### Configuration System
-
-Training configs live in `src/f5_tts/configs/` as Hydra YAML files. Key config groups:
-- `datasets`: name, batch_size_per_gpu (frame-based), num_workers
-- `model`: backbone (DiT/MMDiT/UNetT), arch (dim, depth, heads), mel_spec params, tokenizer
-- `optim`: learning_rate, warmup, gradient clipping
-- `ckpts`: logger type, save frequency, checkpoint retention
-
-Override any value at CLI: `++model.arch.depth=24`.
-
-### Local Training Setup
-
-The `run.sh` script demonstrates multi-GPU training with a local vocoder path and W&B offline mode. Pass the config name as the first argument: `bash run.sh F5TTS_v1_Base.yaml`.
+## Core Principles
+- **Simplicity First**: Make every change as simple as possible and avoid over-engineering. Impact minimal code.
+- **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
+- **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.

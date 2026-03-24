@@ -5,6 +5,7 @@ import sys
 sys.path.append(os.getcwd())
 
 import argparse
+import logging
 import time
 from importlib.resources import files
 
@@ -15,6 +16,11 @@ from hydra.utils import get_class
 from omegaconf import OmegaConf
 from tqdm import tqdm
 from transformers import Qwen2_5OmniProcessor, Qwen2_5OmniThinkerForConditionalGeneration
+from transformers.debug_utils import DebugUnderflowOverflow
+
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 from f5_tts.eval.utils_eval import (
     get_inference_prompt,
@@ -47,7 +53,7 @@ def main():
     parser.add_argument("-o", "--odemethod", default="euler")
     parser.add_argument("-ss", "--swaysampling", default=-1, type=float)
     parser.add_argument("--dtype", default="fp16", type=str)
-    parser.add_argument("-cfg","--cfg_strength", default=2.0, type=float)
+    parser.add_argument("-cfg", "--cfg_strength", default=2.0, type=float)
 
     parser.add_argument("-t", "--testset", required=True)
     parser.add_argument(
@@ -55,7 +61,7 @@ def main():
     )
 
     parser.add_argument("--local", action="store_true", help="Use local vocoder checkpoint directory")
-
+    parser.add_argument("--debug-nan", action="store_true", help="Enable DebugUnderflowOverflow to detect NaN/Inf")
     args = parser.parse_args()
 
     seed = args.seed
@@ -107,6 +113,11 @@ def main():
         librispeech_test_clean_path = args.librispeech_test_clean_path
         metainfo = get_librispeech_test_clean_metainfo(metalst, librispeech_test_clean_path)
 
+    elif testset == "ls_debug":
+        metalst = rel_path + "/data/librispeech_failed"
+        librispeech_test_clean_path = args.librispeech_test_clean_path
+        metainfo = get_librispeech_test_clean_metainfo(metalst, librispeech_test_clean_path)
+
     elif testset == "seedtts_test_zh":
         metalst = "/inspire/hdd/global_user/chenxie-25019/download_datas/seedtts_testset/zh/meta.lst"
         metainfo = get_seedtts_testset_metainfo(metalst)
@@ -118,7 +129,7 @@ def main():
     # path to save generated wavs
     output_dir = (
         f"{rel_path}/"
-        f"results/{exp_name}_{ckpt_step}/{testset}/"
+        f"results/{exp_name}_{ckpt_step}_{args.dtype}/{testset}/"
         f"seed{seed}_{ode_method}_nfe{nfe_step}_{mel_spec_type}"
         f"{f'_ss{sway_sampling_coef}' if sway_sampling_coef else ''}"
         f"_cfg{cfg_strength}_speed{speed}"
@@ -149,9 +160,17 @@ def main():
         vocoder_local_path = "../checkpoints/bigvgan_v2_24khz_100band_256x"
     vocoder = load_vocoder(vocoder_name=mel_spec_type, is_local=local, local_path=vocoder_local_path)
 
+    # change backend when use fp32
+    if args.dtype == "fp32":
+        model_arc.attn_backend = "torch"
+
     # Model (no tokenizer/vocab needed — CFMEdit handles text via LLM)
     model = CFMEdit(
-        transformer=model_cls(**model_arc, mel_dim=n_mel_channels),
+        transformer=model_cls(
+            **model_arc,
+            mel_dim=n_mel_channels,
+            text_proj_first=text_encoder_cfg.get("text_proj_first", False),
+        ),
         text_encoder=text_encoder,
         text_processor=text_processor,
         text_encoder_max_length=text_encoder_cfg.get("text_encoder_max_length", 512),
@@ -216,6 +235,8 @@ def main():
     del checkpoint
     torch.cuda.empty_cache()
     model = model.to(device)
+    if args.debug_nan:
+        debug_overflow = DebugUnderflowOverflow(model, max_frames_to_save=50)
 
     if not os.path.exists(output_dir) and accelerator.is_main_process:
         os.makedirs(output_dir)
@@ -246,16 +267,38 @@ def main():
                 )
                 # Final result
                 for i, gen in enumerate(generated):
+                    output_path = f"{output_dir}/{utts[i]}.wav"
+
+                    # Skip if already exists
+                    if os.path.exists(output_path):
+                        logger.info(f"{utts[i]} - already exists, skipping...")
+                        continue
+
                     gen = gen[ref_mel_lens[i] : total_mel_lens[i], :].unsqueeze(0)
                     gen_mel_spec = gen.permute(0, 2, 1).to(torch.float32)
+                    if torch.isnan(gen_mel_spec).any() or torch.isinf(gen_mel_spec).any():
+                        nan_count = torch.isnan(gen_mel_spec).sum().item()
+                        inf_count = torch.isinf(gen_mel_spec).sum().item()
+                        logger.warning(
+                            f"{utts[i]} - mel spectrogram contains NaN({nan_count})/Inf({inf_count}), "
+                            f"shape={gen_mel_spec.shape}, text={final_text_list[i][:100]}, "
+                            f"ref_len={ref_mel_lens[i].item()}, total_len={total_mel_lens[i].item()}"
+                        )
+                        with open(f"{output_dir}/failed_model_samples.txt", "a") as f:
+                            f.write(f"{utts[i]}\n")
+                        continue
                     if mel_spec_type == "vocos":
                         generated_wave = vocoder.decode(gen_mel_spec).cpu()
                     elif mel_spec_type == "bigvgan":
                         generated_wave = vocoder(gen_mel_spec).squeeze(0).cpu()
-
+                    if torch.isnan(generated_wave).any() or torch.isinf(generated_wave).any():
+                        logger.warning(f"{utts[i]} - generated audio contains NaN/Inf, skipping...")
+                        with open(f"{output_dir}/failed_vocoder_samples.txt", "a") as f:
+                            f.write(f"{utts[i]}\n")
+                        continue
                     if ref_rms_list[i] < target_rms:
                         generated_wave = generated_wave * ref_rms_list[i] / target_rms
-                    torchaudio.save(f"{output_dir}/{utts[i]}.wav", generated_wave, target_sample_rate)
+                    torchaudio.save(output_path, generated_wave, target_sample_rate)
 
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:

@@ -1,0 +1,67 @@
+hydra:
+  run:
+    dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${datasets.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+datasets:
+  name: Emilia_ZH_EN  # dataset name
+  batch_size_per_gpu: 38400  # 8 GPUs, 8 * 38400 = 307200
+  batch_size_type: frame  # frame | sample
+  max_samples: 64  # max sequences per batch if use frame-wise batch_size. we set 32 for small models, 64 for base models
+  num_workers: 24
+
+optim:
+  epochs: 11
+  learning_rate: 7.5e-5
+  num_warmup_updates: 20000  # warmup updates
+  grad_accumulation_steps: 1  # note: updates = steps / grad_accumulation_steps
+  max_grad_norm: 1.0  # gradient clipping
+  bnb_optimizer: False  # use bnb 8bit AdamW optimizer or not
+  fused_adam: True  # use fused AdamW optimizer or not
+
+model:
+  name: Flux2Edit_8-16_Qwen_omni_3B_drop_system_proj_first
+  backbone: Flux2Edit
+  cfm_class: CFMEdit
+  text_encoder:
+    name: qwen_omni_3b
+    text_encoder_path: /inspire/hdd/global_user/chenxie-25019/download_ckpts/Qwen2.5-Omni-3B
+    weight_type: bf16
+    freeze_text_encoder: true
+    text_encoder_max_length: 512
+    text_drop_idx: 40
+    text_proj_first: true # proj -> rms_norm | if false, rms_norm -> proj
+  tokenizer: raw_text
+  tokenizer_path: null
+  arch:
+    dim: 1024
+    heads: 16
+    ff_mult: 2
+    text_hidden_dim: 2048
+    qk_norm: torch  # null | rms_norm | torch | liger
+    attn_backend: flash_attn  # torch | flash_attn
+    attn_mask_enabled: True
+    checkpoint_activations: False  # recompute activations and save memory for extra compute
+    ffn_type: swiglu_ffn  # gelu | swiglu_ffn | liger_swiglu_ffn
+    num_layers: 8  # double-stream (MMDiT) block count
+    num_single_layers: 16  # single-stream (DiT) block count
+  mel_spec:
+    target_sample_rate: 24000
+    n_mel_channels: 100
+    hop_length: 256
+    win_length: 1024
+    n_fft: 1024
+    mel_spec_type: vocos  # vocos | bigvgan
+  vocoder:
+    is_local: False  # use local offline ckpt or not
+    local_path: null  # local vocoder path
+
+ckpts:
+  logger: wandb  # wandb | tensorboard | null
+  wandb_project: CFM-LLM
+  wandb_run_name: ${model.name}_${model.mel_spec.mel_spec_type}_${datasets.name}
+  wandb_resume_id: null
+  log_samples: True  # infer random sample per save checkpoint. wip, normal to fail with extra long samples
+  save_per_updates: 100000  # save checkpoint per updates
+  keep_last_n_checkpoints: -1  # -1 to keep all, 0 to not save intermediate, > 0 to keep last N checkpoints
+  last_per_updates: 5000  # save last checkpoint per updates
+  save_dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${datasets.name}

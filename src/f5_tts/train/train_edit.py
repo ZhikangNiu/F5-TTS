@@ -64,7 +64,11 @@ def main(model_cfg):
         raise ValueError(f"Unknown text encoder: {text_encoder_cfg.name}")
 
     # --- create backbone ---
-    backbone = model_cls(**model_arc, mel_dim=model_cfg.model.mel_spec.n_mel_channels)
+    backbone = model_cls(
+        **model_arc,
+        mel_dim=model_cfg.model.mel_spec.n_mel_channels,
+        text_proj_first=text_encoder_cfg.get("text_proj_first", False),
+    )
 
     # --- create CFMEdit ---
     model = CFMEdit(

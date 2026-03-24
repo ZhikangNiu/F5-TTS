@@ -39,6 +39,7 @@ class MMDiTEdit(nn.Module):
         ff_mult=4,
         mel_dim=100,
         text_hidden_dim=2048,
+        text_proj_first=False,
         qk_norm=None,
         checkpoint_activations=False,
         attn_backend="torch",
@@ -64,9 +65,13 @@ class MMDiTEdit(nn.Module):
         self.depth = depth
 
         self.time_embed = TimestepEmbedding(dim)
+        self.text_proj_first = text_proj_first
 
-        # text projection: RMSNorm(text_hidden_dim) -> Linear(text_hidden_dim, dim)
-        self.txt_norm = RMSNorm(text_hidden_dim, eps=1e-6)
+        # text projection
+        # False (default): RMSNorm(text_hidden_dim) -> Linear(text_hidden_dim, dim)
+        # True:            Linear(text_hidden_dim, dim) -> RMSNorm(dim)
+        norm_dim = dim if text_proj_first else text_hidden_dim
+        self.txt_norm = RMSNorm(norm_dim, eps=1e-6)
         self.txt_proj = nn.Linear(text_hidden_dim, dim)
 
         self.audio_embed = AudioEmbedding(mel_dim, dim)
@@ -119,8 +124,11 @@ class MMDiTEdit(nn.Module):
         return ckpt_forward
 
     def _project_text(self, text: float["b nt h"], drop_text: bool = False):
-        """RMSNorm + Linear projection from LLM hidden states to model dim."""
-        c = self.txt_proj(self.txt_norm(text))
+        """Project LLM hidden states to model dim with RMSNorm."""
+        if self.text_proj_first:
+            c = self.txt_norm(self.txt_proj(text))
+        else:
+            c = self.txt_proj(self.txt_norm(text))
         if drop_text:
             c = torch.zeros_like(c)
         return c
