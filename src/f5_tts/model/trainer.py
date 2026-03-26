@@ -16,6 +16,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR, SequentialLR
 from torch.utils.data import DataLoader, Dataset, SequentialSampler
 from tqdm import tqdm
+from transformers import get_cosine_schedule_with_warmup, get_cosine_with_min_lr_schedule_with_warmup
 
 import wandb
 from f5_tts.model import CFM
@@ -341,7 +342,9 @@ class Trainer:
         gc.collect()
         return update
 
-    def train(self, train_dataset: Dataset, num_workers=16, resumable_with_seed: int = None):
+    def train(
+        self, train_dataset: Dataset, num_workers=16, resumable_with_seed: int = None, scheduler_type: str = "linear"
+    ):
         if self.log_samples:
             from f5_tts.infer.utils_infer import load_vocoder
 
@@ -398,11 +401,25 @@ class Trainer:
         # otherwise by default with split_batches=False, warmup steps change with num_processes
         total_updates = math.ceil(len(train_dataloader) / self.grad_accumulation_steps) * self.epochs
         decay_updates = total_updates - warmup_updates
-        warmup_scheduler = LinearLR(self.optimizer, start_factor=1e-8, end_factor=1.0, total_iters=warmup_updates)
-        decay_scheduler = LinearLR(self.optimizer, start_factor=1.0, end_factor=1e-8, total_iters=decay_updates)
-        self.scheduler = SequentialLR(
-            self.optimizer, schedulers=[warmup_scheduler, decay_scheduler], milestones=[warmup_updates]
-        )
+        if scheduler_type == "linear":
+            warmup_scheduler = LinearLR(self.optimizer, start_factor=1e-8, end_factor=1.0, total_iters=warmup_updates)
+            decay_scheduler = LinearLR(self.optimizer, start_factor=1.0, end_factor=1e-8, total_iters=decay_updates)
+            self.scheduler = SequentialLR(
+                self.optimizer, schedulers=[warmup_scheduler, decay_scheduler], milestones=[warmup_updates]
+            )
+        elif scheduler_type == "cosine":
+            self.scheduler = get_cosine_schedule_with_warmup(
+                self.optimizer, num_warmup_steps=warmup_updates, num_training_steps=total_updates
+            )
+        elif scheduler_type == "cosine_min_lr":
+            self.scheduler = get_cosine_with_min_lr_schedule_with_warmup(
+                self.optimizer, num_warmup_steps=warmup_updates, num_training_steps=total_updates, min_lr_rate=0.1
+            )
+        else:
+            raise ValueError(
+                f"Unknown scheduler_type: {scheduler_type!r}. Choose from 'linear', 'cosine', 'cosine_min_lr'."
+            )
+
         train_dataloader, self.scheduler = self.accelerator.prepare(
             train_dataloader, self.scheduler
         )  # actual multi_gpu updates = single_gpu updates / gpu nums

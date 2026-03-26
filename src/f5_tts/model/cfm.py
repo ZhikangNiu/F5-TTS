@@ -48,10 +48,16 @@ class CFM(nn.Module):
         mel_spec_kwargs: dict = dict(),
         frac_lengths_mask: tuple[float, float] = (0.7, 1.0),
         vocab_char_map: dict[str:int] | None = None,
+        t_sampling: str = "uniform",
+        P_mean: float = -0.8,
+        P_std: float = 0.8,
     ):
         super().__init__()
 
         self.frac_lengths_mask = frac_lengths_mask
+        self.t_sampling = t_sampling
+        self.P_mean = P_mean
+        self.P_std = P_std
 
         # mel spec
         self.mel_spec = default(mel_spec_module, MelSpec(**mel_spec_kwargs))
@@ -230,6 +236,15 @@ class CFM(nn.Module):
 
         return out, trajectory
 
+    def sample_time(self, batch: int, dtype, device) -> torch.Tensor:
+        if self.t_sampling == "uniform":
+            return torch.rand((batch,), dtype=dtype, device=device)
+        elif self.t_sampling == "logistic_normal":
+            z = torch.randn((batch,), dtype=dtype, device=device) * self.P_std + self.P_mean
+            return torch.sigmoid(z)
+        else:
+            raise ValueError(f"Unknown t_sampling: {self.t_sampling}")
+
     def forward(
         self,
         inp: float["b n d"] | float["b nw"],  # mel or raw wave
@@ -273,7 +288,7 @@ class CFM(nn.Module):
         x0 = torch.randn_like(x1)
 
         # time step
-        time = torch.rand((batch,), dtype=dtype, device=self.device)
+        time = self.sample_time(batch, dtype, self.device)
         # TODO. noise_scheduler
 
         # sample xt (φ_t(x) in the paper)

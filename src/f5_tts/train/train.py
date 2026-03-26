@@ -48,10 +48,12 @@ def main(model_cfg):
     vocab_char_map, vocab_size = get_tokenizer(tokenizer_path, tokenizer)
 
     # set model
+    schedule_cfg = OmegaConf.to_container(model_cfg.model.get("schedule", OmegaConf.create({})), resolve=True)
     model = CFM(
         transformer=model_cls(**model_arc, text_num_embeds=vocab_size, mel_dim=model_cfg.model.mel_spec.n_mel_channels),
         mel_spec_kwargs=model_cfg.model.mel_spec,
         vocab_char_map=vocab_char_map,
+        **schedule_cfg,
     )
 
     # init trainer
@@ -87,6 +89,7 @@ def main(model_cfg):
         train_dataset,
         num_workers=model_cfg.datasets.num_workers,
         resumable_with_seed=666,  # seed for shuffling dataset
+        scheduler_type=model_cfg.optim.get("scheduler_type", "linear"),
     )
 
 

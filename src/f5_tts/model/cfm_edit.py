@@ -143,7 +143,6 @@ class CFMEdit(CFM):
             duration = torch.full((batch,), duration, device=device, dtype=torch.long)
 
         # duration at least text/audio prompt length plus one token
-        text_len = text_embeds.shape[1]
         non_pad = (text_embeds.abs().sum(-1) > 0).sum(dim=-1)  # valid text tokens
         duration = torch.maximum(torch.maximum(non_pad, lens) + 1, duration)
         duration = duration.clamp(max=max_duration)
@@ -269,7 +268,7 @@ class CFMEdit(CFM):
         x0 = torch.randn_like(x1)
 
         # time step
-        time = torch.rand((batch,), dtype=dtype, device=self.device)
+        time = self.sample_time(batch, dtype, self.device)
 
         # sample xt
         t = time.unsqueeze(-1).unsqueeze(-1)

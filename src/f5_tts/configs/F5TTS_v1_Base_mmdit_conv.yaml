@@ -17,6 +17,7 @@ optim:
   max_grad_norm: 1.0  # gradient clipping
   bnb_optimizer: False  # use bnb 8bit AdamW optimizer or not
   fused_adam: False  # use fused AdamW optimizer or not
+  scheduler_type: linear  # linear | cosine | cosine_min_lr
 
 model:
   name: F5TTS_v1_MMDiT_Conv_Base  # model name

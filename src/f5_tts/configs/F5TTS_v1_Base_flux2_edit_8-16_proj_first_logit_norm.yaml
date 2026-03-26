@@ -1,6 +1,6 @@
 hydra:
   run:
-    dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${datasets.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 datasets:
   name: Emilia_ZH_EN  # dataset name
@@ -20,25 +20,35 @@ optim:
   scheduler_type: linear  # linear | cosine | cosine_min_lr
 
 model:
-  name: Flux2Audio_4_24  # model name
-  tokenizer: pinyin  # tokenizer type
-  tokenizer_path: null  # if 'custom' tokenizer, define the path want to use (should be vocab.txt)
-  backbone: Flux2Audio
+  name: Flux2Edit_8-16_Qwen_omni_3B_drop_system_proj_first_logit_norm
+  backbone: Flux2Edit
+  cfm_class: CFMEdit
+  schedule:
+    t_sampling: logistic_normal
+    P_mean: -0.8
+    P_std: 0.8
+  text_encoder:
+    name: qwen_omni_3b
+    text_encoder_path: /inspire/hdd/global_user/chenxie-25019/download_ckpts/Qwen2.5-Omni-3B
+    weight_type: bf16
+    freeze_text_encoder: true
+    text_encoder_max_length: 512
+    text_drop_idx: 40
+    text_proj_first: true # proj -> rms_norm | if false, rms_norm -> proj
+  tokenizer: raw_text
+  tokenizer_path: null
   arch:
     dim: 1024
     heads: 16
     ff_mult: 2
-    text_mask_padding: True
+    text_hidden_dim: 2048
     qk_norm: torch  # null | rms_norm | torch | liger
-    text_layers: 0
     attn_backend: flash_attn  # torch | flash_attn
     attn_mask_enabled: True
     checkpoint_activations: False  # recompute activations and save memory for extra compute
     ffn_type: swiglu_ffn  # gelu | swiglu_ffn | liger_swiglu_ffn
-    ffn_type_c: swiglu_ffn  # gelu | swiglu_ffn | liger_swiglu_ffn
-    ffn_type_x: swiglu_ffn
-    num_layers: 4  # double-stream (MMDiT) block count
-    num_single_layers: 24  # single-stream (DiT) block count
+    num_layers: 8  # double-stream (MMDiT) block count
+    num_single_layers: 16  # single-stream (DiT) block count
   mel_spec:
     target_sample_rate: 24000
     n_mel_channels: 100
@@ -52,11 +62,11 @@ model:
 
 ckpts:
   logger: wandb  # wandb | tensorboard | null
-  wandb_project: CFM-TTS
-  wandb_run_name: ${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}
+  wandb_project: CFM-LLM
+  wandb_run_name: ${model.name}_${model.mel_spec.mel_spec_type}_${datasets.name}
   wandb_resume_id: null
   log_samples: True  # infer random sample per save checkpoint. wip, normal to fail with extra long samples
-  save_per_updates: 50000  # save checkpoint per updates
+  save_per_updates: 100000  # save checkpoint per updates
   keep_last_n_checkpoints: -1  # -1 to keep all, 0 to not save intermediate, > 0 to keep last N checkpoints
   last_per_updates: 5000  # save last checkpoint per updates
-  save_dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}
+  save_dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${datasets.name}

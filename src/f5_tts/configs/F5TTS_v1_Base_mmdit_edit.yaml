@@ -17,6 +17,7 @@ optim:
   max_grad_norm: 1.0
   bnb_optimizer: False
   fused_adam: True
+  scheduler_type: linear  # linear | cosine | cosine_min_lr
 
 model:
   name: F5TTS_v1_Edit

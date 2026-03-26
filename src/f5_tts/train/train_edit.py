@@ -71,6 +71,7 @@ def main(model_cfg):
     )
 
     # --- create CFMEdit ---
+    schedule_cfg = OmegaConf.to_container(model_cfg.model.get("schedule", OmegaConf.create({})), resolve=True)
     model = CFMEdit(
         transformer=backbone,
         text_encoder=text_encoder,
@@ -78,6 +79,7 @@ def main(model_cfg):
         text_encoder_max_length=text_encoder_cfg.text_encoder_max_length,
         text_drop_idx=text_encoder_cfg.text_drop_idx,
         mel_spec_kwargs=OmegaConf.to_container(model_cfg.model.mel_spec, resolve=True),
+        **schedule_cfg,
     )
 
     # --- init trainer ---
